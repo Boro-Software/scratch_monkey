@@ -167,6 +167,53 @@ def exec_shell(
     runner.exec_interactive(container_name, [cmd], options=options)
 
 
+def refresh(
+    instance: Instance,
+    runner: PodmanRunner,
+    image: str,
+    *,
+    discard: bool = False,
+) -> str:
+    """Recreate the overlay container so it picks up fresh run args.
+
+    `ensure_running()` only ever `podman start`s an existing container, so
+    changes to how the container is created (new mounts, new podman flags,
+    etc.) never reach it once it exists. `refresh()` fixes that by removing
+    and recreating the container.
+
+    By default (discard=False) the container's writable layer is committed
+    to the instance's image tag (`instance.name`) *before* removal, so any
+    software installed ad-hoc inside the container (e.g. `dnf install vim`)
+    is preserved — the recreated container is built from that snapshot.
+    Pass discard=True to skip the snapshot and recreate from `image`
+    instead, discarding the writable layer entirely.
+
+    If committing fails, the error propagates and the container is left
+    in place — the writable layer is never destroyed without a successful
+    snapshot first.
+
+    Returns the container name.
+    """
+    container_name = _ensure_overlay_id(instance)
+
+    if not runner.container_exists(container_name):
+        # Nothing to preserve — just ensure it's running.
+        return ensure_running(instance, runner, image)
+
+    if runner.container_running(container_name):
+        runner.stop(container_name)
+
+    recreate_image = image
+    if not discard:
+        # Commit BEFORE remove: if this raises, the container must survive.
+        runner.commit(container_name, instance.name)
+        recreate_image = instance.name
+
+    runner.remove(container_name)
+
+    return ensure_running(instance, runner, recreate_image)
+
+
 def reset(instance: Instance, runner: PodmanRunner) -> bool:
     """Remove the overlay container for an instance.
 

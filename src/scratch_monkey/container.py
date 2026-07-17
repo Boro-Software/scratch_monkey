@@ -143,6 +143,10 @@ class PodmanRunner:
         """Tag an image with a new name."""
         self._run(["tag", source, target])
 
+    def commit(self, container: str, image: str) -> None:
+        """Commit a container's writable layer to an image tag."""
+        self._run(["commit", container, image])
+
     def build(
         self,
         tag: str,

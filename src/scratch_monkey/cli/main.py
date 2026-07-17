@@ -24,6 +24,7 @@ from ..instance import (
     skel_copy,
 )
 from ..overlay import OverlayError, ensure_running, exec_shell
+from ..overlay import refresh as overlay_refresh
 from ..overlay import reset as overlay_reset
 from ..run_args import (
     DEFAULT_BASE_IMAGE,
@@ -440,6 +441,70 @@ def reset(ctx: click.Context, name: str, yes: bool) -> None:
         click.echo(f"Overlay container for {name!r} removed.")
 
 
+@cli.command()
+@click.argument("name")
+@click.option(
+    "--discard",
+    is_flag=True,
+    default=False,
+    help="Discard the writable layer instead of preserving it (skips the snapshot commit).",
+)
+@click.pass_context
+def refresh(ctx: click.Context, name: str, discard: bool) -> None:
+    """Recreate an instance's overlay container to pick up config/run-arg changes.
+
+    By default, the container's writable layer (any ad-hoc installed
+    software) is committed to the instance's image tag before the
+    container is removed and recreated, so installed software is
+    preserved. Pass --discard to skip the snapshot and recreate from the
+    base/instance image instead, throwing away anything installed inside
+    the container.
+    """
+    instances_dir: Path = ctx.obj["instances_dir"]
+    runner: PodmanRunner = ctx.obj["runner"]
+    inst = _get_instance(instances_dir, name)
+
+    if discard:
+        click.confirm(
+            f"Discard the writable layer for {name!r}? Package installs will be lost.",
+            abort=True,
+        )
+
+    run_image = _determine_run_image(inst, runner, ctx.obj["base_image"])
+
+    try:
+        overlay_refresh(inst, runner, run_image, discard=discard)
+    except (PodmanError, OverlayError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    if discard:
+        click.echo(f"Refreshed overlay container for {name!r} (writable layer discarded).")
+    else:
+        click.echo(f"Refreshed overlay container for {name!r} (snapshot committed to image {name!r})")
+
+
+def _determine_run_image(inst: Instance, runner: PodmanRunner, default_base: str) -> str:
+    """Determine which image to run an instance from.
+
+    Prefers the instance's own image tag (built via `build-instance`) if it
+    exists; otherwise falls back to the instance's detected base image,
+    building it first if it isn't present locally.
+    """
+    if runner.image_exists(inst.name):
+        return inst.name
+
+    instance_base = detect_base_image(inst.directory) or default_base
+    run_image = instance_base
+    if not runner.image_exists(run_image):
+        click.echo(f"Base image {run_image!r} not found, building...")
+        if "fedora" in run_image:
+            runner.build(run_image, str(PROJECT_DIR), dockerfile=str(PROJECT_DIR / "Dockerfile.fedora"))
+        else:
+            runner.build(run_image, str(PROJECT_DIR))
+    return run_image
+
+
 def _run_instance(
     inst: Instance,
     runner: PodmanRunner,
@@ -451,18 +516,7 @@ def _run_instance(
     cfg = inst.config
     user = os.environ.get("USER", "user")
 
-    # Determine image
-    if runner.image_exists(inst.name):
-        run_image = inst.name
-    else:
-        instance_base = detect_base_image(inst.directory) or default_base
-        run_image = instance_base
-        if not runner.image_exists(run_image):
-            click.echo(f"Base image {run_image!r} not found, building...")
-            if "fedora" in run_image:
-                runner.build(run_image, str(PROJECT_DIR), dockerfile=str(PROJECT_DIR / "Dockerfile.fedora"))
-            else:
-                runner.build(run_image, str(PROJECT_DIR))
+    run_image = _determine_run_image(inst, runner, default_base)
 
     fedora = is_fedora_based(inst.directory)
 
