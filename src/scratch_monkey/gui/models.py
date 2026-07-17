@@ -39,6 +39,7 @@ from ..instance import (
     skel_copy,
 )
 from ..overlay import ensure_running as overlay_ensure_running
+from ..overlay import refresh as overlay_refresh
 from ..overlay import reset as overlay_reset
 from ..run_args import DEFAULT_BASE_IMAGE, FEDORA_IMAGE, PROJECT_DIR
 from ..shared import list_shared, parse_shared_entry
@@ -553,6 +554,36 @@ class AppModel(Atom):
             self.status_message = f"Error: {exc}"
 
         self._run_async(f"Resetting overlay for {name!r}...", work, on_success, on_error)
+
+    def refresh_overlay(self, name: str) -> None:
+        """Recreate the overlay container for the named instance, preserving installs."""
+        instances_dir = Path(self.instances_dir)
+        inst_dir = instances_dir / name
+        if not inst_dir.is_dir():
+            self.status_message = f"Instance {name!r} not found"
+            return
+        inst = Instance.from_directory(inst_dir)
+        # Determine image: per-instance build or base image (mirrors start_instance)
+        if self._runner.image_exists(name):
+            image = name
+        else:
+            image = detect_base_image(inst_dir) or DEFAULT_BASE_IMAGE
+
+        def work():
+            overlay_refresh(inst, self._runner, image)
+
+        def on_success(_result):
+            for m in self.instances:
+                if m.name == name:
+                    m.overlay_running = True
+                    break
+            self.status_message = f"Refreshed {name!r} (installs preserved)"
+
+        def on_error(exc):
+            self.poll_status()
+            self.status_message = f"Error refreshing {name!r}: {exc}"
+
+        self._run_async(f"Refreshing {name!r}...", work, on_success, on_error)
 
     def delete_instance(self, name: str) -> None:
         """Delete the named instance (no confirmation — caller must confirm)."""

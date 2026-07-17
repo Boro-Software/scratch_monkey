@@ -170,6 +170,15 @@ enamldef InstanceDetailPanel(Container): panel:
                                     tool_tip = "Build the container image for this instance"
 
                                 PushButton:
+                                    text = "Refresh Overlay"
+                                    clicked ::
+                                        app_model.refresh_overlay(app_model.selected_instance)
+                                    tool_tip = (
+                                        "Recreate the overlay container with current settings, "
+                                        "preserving installed software"
+                                    )
+
+                                PushButton:
                                     text = "Reset Overlay"
                                     clicked ::
                                         result = question(

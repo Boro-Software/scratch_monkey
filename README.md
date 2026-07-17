@@ -247,7 +247,7 @@ The GUI provides:
 - Configuration editing (cmd, wayland, ssh, home, overlay, GPU passthrough)
 - Volume mount management (add/remove host:container mounts, set ro/rw mode; defaults to ro)
 - Environment variable, device, and shared volume management
-- Action buttons (enter, enter as root, build, reset overlay, export cmd, edit files)
+- Action buttons (enter, enter as root, build, refresh overlay, reset overlay, export cmd, edit files)
 - Live status polling with in-place overlay/image status updates
 
 ---
