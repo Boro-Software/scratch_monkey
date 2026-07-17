@@ -3,6 +3,8 @@
 import os
 from unittest.mock import patch
 
+import pytest
+
 from scratch_monkey.config import InstanceConfig
 from scratch_monkey.container import PodmanError
 from scratch_monkey.instance import Instance
@@ -11,6 +13,7 @@ from scratch_monkey.overlay import (
     _setup_fedora_user,
     ensure_running,
     exec_shell,
+    refresh,
     reset,
 )
 
@@ -375,3 +378,90 @@ class TestReset:
         result = reset(scratch_instance, mock_runner)
         assert result is False
         mock_runner.remove.assert_not_called()
+
+
+# ─── refresh ──────────────────────────────────────────────────────────────────
+
+
+class TestRefresh:
+    def test_creates_if_missing(self, scratch_instance, mock_runner):
+        """No container yet — nothing to preserve, just ensure_running()."""
+        mock_runner.container_exists.return_value = False
+        name = refresh(scratch_instance, mock_runner, "scratch_monkey")
+        assert name == "sm-testtest"
+        mock_runner.run_daemon.assert_called_once()
+        mock_runner.commit.assert_not_called()
+        mock_runner.stop.assert_not_called()
+        mock_runner.remove.assert_not_called()
+
+    def test_stopped_container_not_stopped_again(self, scratch_instance, mock_runner):
+        mock_runner.container_exists.return_value = True
+        mock_runner.container_running.return_value = False
+        refresh(scratch_instance, mock_runner, "scratch_monkey")
+        mock_runner.stop.assert_not_called()
+
+    def test_running_container_is_stopped(self, scratch_instance, mock_runner):
+        mock_runner.container_exists.return_value = True
+        mock_runner.container_running.return_value = True
+        refresh(scratch_instance, mock_runner, "scratch_monkey")
+        mock_runner.stop.assert_called_once_with("sm-testtest")
+
+    def test_commits_to_instance_tag_by_default(self, scratch_instance, mock_runner):
+        mock_runner.container_exists.return_value = True
+        refresh(scratch_instance, mock_runner, "scratch_monkey")
+        mock_runner.commit.assert_called_once_with("sm-testtest", "myinstance")
+
+    def test_commit_happens_before_remove(self, scratch_instance, mock_runner):
+        mock_runner.container_exists.return_value = True
+        calls = []
+        mock_runner.commit.side_effect = lambda *a: calls.append("commit")
+        mock_runner.remove.side_effect = lambda *a, **k: calls.append("remove")
+        refresh(scratch_instance, mock_runner, "scratch_monkey")
+        assert calls == ["commit", "remove"]
+
+    def test_removes_container_after_commit(self, scratch_instance, mock_runner):
+        mock_runner.container_exists.return_value = True
+        refresh(scratch_instance, mock_runner, "scratch_monkey")
+        mock_runner.remove.assert_called_once_with("sm-testtest")
+
+    def test_discard_skips_commit(self, scratch_instance, mock_runner):
+        mock_runner.container_exists.return_value = True
+        refresh(scratch_instance, mock_runner, "scratch_monkey", discard=True)
+        mock_runner.commit.assert_not_called()
+        mock_runner.remove.assert_called_once_with("sm-testtest")
+
+    def test_commit_failure_prevents_remove(self, scratch_instance, mock_runner):
+        """If commit fails, the container must be left in place."""
+        mock_runner.container_exists.return_value = True
+        mock_runner.commit.side_effect = PodmanError("commit failed")
+        with pytest.raises(PodmanError):
+            refresh(scratch_instance, mock_runner, "scratch_monkey")
+        mock_runner.remove.assert_not_called()
+
+    def test_recreate_uses_instance_tag_as_image(self, scratch_instance, mock_runner):
+        """After a preserving refresh, recreation must run from the committed tag."""
+        mock_runner.container_exists.side_effect = [True, False]
+        refresh(scratch_instance, mock_runner, "scratch_monkey")
+        mock_runner.run_daemon.assert_called_once()
+        image_arg = mock_runner.run_daemon.call_args[0][1]
+        assert image_arg == "myinstance"
+
+    def test_discard_recreates_with_original_image(self, scratch_instance, mock_runner):
+        mock_runner.container_exists.side_effect = [True, False]
+        refresh(scratch_instance, mock_runner, "scratch_monkey", discard=True)
+        mock_runner.run_daemon.assert_called_once()
+        image_arg = mock_runner.run_daemon.call_args[0][1]
+        assert image_arg == "scratch_monkey"
+
+    def test_recreation_uses_fresh_run_args(self, scratch_instance, mock_runner):
+        """Recreation must build run args fresh, not reuse whatever the old
+        container was started with."""
+        mock_runner.container_exists.side_effect = [True, False]
+        refresh(scratch_instance, mock_runner, "scratch_monkey")
+        run_args = mock_runner.run_daemon.call_args[0][2]
+        assert "/usr:/usr:ro" in run_args
+
+    def test_returns_container_name(self, scratch_instance, mock_runner):
+        mock_runner.container_exists.side_effect = [True, False]
+        name = refresh(scratch_instance, mock_runner, "scratch_monkey")
+        assert name == "sm-testtest"

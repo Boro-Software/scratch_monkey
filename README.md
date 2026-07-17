@@ -160,9 +160,25 @@ When `overlay = true` in `scratch.toml`, a persistent daemon container (`<name>-
 scratch-monkey enter myproject        # exec into the overlay container
 scratch-monkey enter myproject --root # exec as root
 scratch-monkey reset myproject        # wipe the overlay container (prompts)
+scratch-monkey refresh myproject      # recreate the container, preserving installs
 ```
 
 > **Note:** Overlay user setup (`useradd`, `sudoers`) is only performed for fedora-based instances. Scratch instances mount `/etc` from the host read-only — the user already exists and sudo works via host config.
+
+### Refreshing the overlay container
+
+Once created, the overlay container is only ever `podman start`ed — changes to `scratch.toml` (volumes, env, GPU, devices, etc.) or to scratch-monkey's own run args don't reach an existing container. Use `refresh` to recreate it with current settings:
+
+```bash
+scratch-monkey refresh myproject            # recreate, preserving installed software
+scratch-monkey refresh myproject --discard  # recreate from a clean image (prompts)
+```
+
+By default, `refresh` commits the container's writable layer (e.g. anything installed with `dnf install`) to the instance's image tag *before* removing the container, then recreates it from that snapshot — so ad-hoc installs survive. If the commit fails, the original container is left untouched.
+
+`--discard` skips the snapshot and recreates from the base/instance image instead, throwing away anything installed inside the container; it prompts for confirmation since this is destructive.
+
+Each preserving `refresh` adds one more layer to the instance's image, since it's committed on top of whatever was there before. Repeated refreshes will grow the image over time — rebuild the instance image (`build-instance`) for a clean slate.
 
 > **Root entry:** `--root` sets the workdir to `/root`. Scratch images don't create `/root`, so scratch-monkey handles it automatically: in non-overlay mode, `/root` is a tmpfs mount; in overlay mode, `/root` is created in the container's writable layer on first root entry and persists across restarts.
 
@@ -303,6 +319,7 @@ Fedora instances use their own filesystem — no host system mounts.
 | `start <name>` | Start overlay container (creates if needed) |
 | `stop <name>` | Stop overlay container |
 | `reset <name>` | Remove overlay container (`--yes` to skip confirm) |
+| `refresh <name>` | Recreate overlay container, preserving installs (`--discard` for clean slate) |
 | `export <name> <cmd> [bin]` | Export a command to `~/.local/bin` |
 | `unexport <bin>` | Remove an exported command |
 | `share create <name>` | Create a shared volume |

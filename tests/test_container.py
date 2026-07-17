@@ -215,6 +215,30 @@ class TestRunDaemon:
             assert "infinity" in args
 
 
+class TestCommit:
+    def test_commit(self, runner):
+        with patch("subprocess.run", return_value=make_result(0)) as mock_run:
+            runner.commit("mycontainer", "myimage")
+            args = mock_run.call_args[0][0]
+            assert "commit" in args
+            assert "mycontainer" in args
+            assert "myimage" in args
+
+    def test_commit_order(self, runner):
+        """commit() passes container before image."""
+        with patch("subprocess.run", return_value=make_result(0)) as mock_run:
+            runner.commit("mycontainer", "myimage")
+            args = mock_run.call_args[0][0]
+            container_idx = args.index("mycontainer")
+            image_idx = args.index("myimage")
+            assert container_idx < image_idx
+
+    def test_commit_raises_on_failure(self, runner):
+        with patch("subprocess.run", return_value=make_result(1, stderr="no such container")):
+            with pytest.raises(PodmanError):
+                runner.commit("missing", "myimage")
+
+
 class TestRunNoCaptureError:
     def test_error_with_none_stderr(self, runner):
         """When capture=False, stderr is None — _run must not crash."""
