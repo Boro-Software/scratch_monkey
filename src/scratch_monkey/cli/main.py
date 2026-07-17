@@ -368,18 +368,7 @@ def start(ctx: click.Context, name: str) -> None:
         config_save(inst.directory / "scratch.toml", inst.config)
         click.echo(f"Enabled overlay mode for {name!r}")
 
-    # Determine image
-    if runner.image_exists(name):
-        image = name
-    else:
-        instance_base = detect_base_image(inst.directory) or ctx.obj["base_image"]
-        image = instance_base
-        if not runner.image_exists(image):
-            click.echo(f"Base image {image!r} not found, building...")
-            if "fedora" in image:
-                runner.build(image, str(PROJECT_DIR), dockerfile=str(PROJECT_DIR / "Dockerfile.fedora"))
-            else:
-                runner.build(image, str(PROJECT_DIR))
+    image = _determine_run_image(inst, runner, ctx.obj["base_image"])
 
     try:
         container_name = ensure_running(inst, runner, image)
@@ -420,7 +409,12 @@ def stop(ctx: click.Context, name: str) -> None:
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
 def reset(ctx: click.Context, name: str, yes: bool) -> None:
-    """Reset overlay container for an instance."""
+    """Reset overlay container for an instance.
+
+    This destroys the container and any installed software. See `refresh`
+    for a non-destructive alternative that recreates the container while
+    preserving installed software.
+    """
     instances_dir: Path = ctx.obj["instances_dir"]
     runner: PodmanRunner = ctx.obj["runner"]
     inst = _get_instance(instances_dir, name)

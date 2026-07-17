@@ -176,7 +176,7 @@ scratch-monkey refresh myproject --discard  # recreate from a clean image (promp
 
 By default, `refresh` commits the container's writable layer (e.g. anything installed with `dnf install`) to the instance's image tag *before* removing the container, then recreates it from that snapshot — so ad-hoc installs survive. If the commit fails, the original container is left untouched.
 
-`--discard` skips the snapshot and recreates from the base/instance image instead, throwing away anything installed inside the container; it prompts for confirmation since this is destructive.
+`--discard` skips the snapshot and recreates from the base/instance image instead, throwing away anything installed inside the container; it prompts for confirmation since this is destructive. `--discard` recreates from whatever image `enter`/`start` would use — so if a previous refresh (or `build-instance`) already tagged the instance image, it discards only changes made since that snapshot, not the full history back to the pristine base image.
 
 Each preserving `refresh` adds one more layer to the instance's image, since it's committed on top of whatever was there before. Repeated refreshes will grow the image over time — rebuild the instance image (`build-instance`) for a clean slate.
 
