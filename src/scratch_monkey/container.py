@@ -159,4 +159,4 @@ class PodmanRunner:
 
     def run_daemon(self, name: str, image: str, run_args: list[str]) -> None:
         """Start a detached/daemon container with the given extra args."""
-        self._run(["run", "-d", "--name", name, *run_args, image, "sleep", "infinity"], capture=False)
+        self._run(["run", "-d", "--init", "--name", name, *run_args, image, "sleep", "infinity"], capture=False)
