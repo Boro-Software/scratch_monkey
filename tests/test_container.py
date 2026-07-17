@@ -213,6 +213,7 @@ class TestRunDaemon:
             assert "myimage" in args
             assert "sleep" in args
             assert "infinity" in args
+            assert "--init" in args
 
 
 class TestCommit:
