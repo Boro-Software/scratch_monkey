@@ -215,6 +215,19 @@ class TestRunDaemon:
             assert "infinity" in args
             assert "--init" in args
 
+    def test_captures_output_and_raises_with_stderr_on_failure(self, runner):
+        """run_daemon captures stderr so PodmanError carries real failure detail
+        (unlike run()/build()/exec, which stream interactively and don't capture)."""
+        with patch(
+            "subprocess.run",
+            return_value=make_result(126, stderr="OCI runtime error: exec format error"),
+        ) as mock_run:
+            with pytest.raises(PodmanError) as excinfo:
+                runner.run_daemon("mycontainer", "myimage", [])
+            assert mock_run.call_args.kwargs["capture_output"] is True
+            assert "exec format error" in str(excinfo.value)
+            assert "exec format error" in excinfo.value.stderr
+
 
 class TestCommit:
     def test_commit(self, runner):
