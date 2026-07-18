@@ -162,5 +162,11 @@ class PodmanRunner:
         self._run(args, capture=False)
 
     def run_daemon(self, name: str, image: str, run_args: list[str]) -> None:
-        """Start a detached/daemon container with the given extra args."""
-        self._run(["run", "-d", "--init", "--name", name, *run_args, image, "sleep", "infinity"], capture=False)
+        """Start a detached/daemon container with the given extra args.
+
+        Unlike run()/build()/the exec methods, this is non-interactive and
+        only ever prints a container id on success, so we capture output —
+        that way a failure raises PodmanError with real stderr detail
+        instead of an empty message.
+        """
+        self._run(["run", "-d", "--init", "--name", name, *run_args, image, "sleep", "infinity"], capture=True)

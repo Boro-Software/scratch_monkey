@@ -281,11 +281,15 @@ class AppModel(Atom):
     # Using Value() (not @property) so Enaml bindings re-fire when it changes.
     selected = Value()
     status_message = Str("")
+    error_message = Str("")
     busy = Bool(False)
     _polling = Bool(False)
     available_shared = List(str)
     # PodmanRunner stored as Value so Atom allows non-member attributes
     _runner = Value()
+    # Status text of the operation currently in flight, shown if a second
+    # action is clicked while busy (see _run_async).
+    _busy_status = Str("")
 
     def __init__(self, instances_dir: Path, runner: PodmanRunner | None = None) -> None:
         super().__init__()
@@ -320,9 +324,12 @@ class AppModel(Atom):
             on_error: Optional callback(exception) called on the GUI thread if work raises.
         """
         if self.busy:
+            self.status_message = f"Busy — please wait ({self._busy_status!r} still running)"
             return
         self.busy = True
+        self._busy_status = status
         self.status_message = status
+        self.error_message = ""
 
         def _thread():
             try:
@@ -331,6 +338,7 @@ class AppModel(Atom):
                 _exc = exc
                 def _on_err(e=_exc):
                     self.busy = False
+                    self.error_message = str(e)
                     if on_error:
                         on_error(e)
                     else:

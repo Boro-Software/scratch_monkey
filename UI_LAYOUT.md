@@ -57,6 +57,41 @@ HGroup: status_bar:
         text << app_model.status_message
 ```
 
+## Collapsible banner named directly in a `vbox()`
+
+A widget referenced by name in a parent's `constraints = [vbox(a, b, c)]` must always
+exist (Conditional can't be used for it, since the name wouldn't resolve when the
+condition is False). To make such a widget show/hide and take zero space when hidden —
+e.g. an error banner above a Splitter — don't rely on `visible` alone to collapse its
+size; the "fixed height to prevent resize" trick from the status bar above assumed a
+*constant* height, which is wrong here since we want *zero* height when hidden.
+
+**Pattern** (from main_window.enaml's error banner, sits above `splitter` in
+`vbox(banner, splitter, status_bar)`):
+```
+HGroup: banner:
+    visible << bool(app_model.error_message)
+    minimum_size << (0, 28) if app_model.error_message else (0, 0)
+    maximum_size << (16777215, 28) if app_model.error_message else (16777215, 0)
+    Label:
+        text << app_model.error_message
+```
+Binding `minimum_size`/`maximum_size` themselves (not just `visible`) to the same
+condition gives the constraint solver a deterministic height in both states, so the
+Splitter reclaims the space cleanly instead of the layout being left to
+implicit hidden-widget sizing.
+
+## Disabling UI during async operations — do not re-add per-button guards
+
+`enabled << not app_model.busy` on the outer `Splitter` in main_window.enaml already
+disables every button in `InstanceListPanel` and `InstanceDetailPanel` recursively
+(Qt propagates `enabled=False` to all descendants). Per-button `enabled` bindings were
+deliberately removed in favor of this single splitter-level binding (see commit
+`c18fae4`) — do not reintroduce them as "redundant safety"; it undoes that refactor
+and reintroduces 12+ near-duplicate bindings for no behavioral gain. If a *new* button
+is added outside the Splitter (e.g. a ToolBar Action), it needs its own
+`enabled << not app_model.busy` binding, same as the existing ToolBar actions.
+
 ## Atom objects and Qt signals
 
 Atom objects do not support `__weakref__`, so `signal.connect(atom_obj.method)` raises
