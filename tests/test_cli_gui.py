@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from scratch_monkey.cli.main import cli
+from scratch_monkey.container import PodmanError
 
 
 def _block_enaml_import(name, *args, _real=builtins.__import__, **kwargs):
@@ -95,6 +96,15 @@ class TestGuiFlag:
         assert result.exit_code == 1
         assert "GUI dependencies not installed" in result.output
         assert "uv tool install --editable '.[gui]'" in result.output
+
+    def test_gui_launch_podman_error_reported_cleanly(self):
+        runner = CliRunner()
+        mock_launch = MagicMock(side_effect=PodmanError("podman timed out"))
+        with patch("scratch_monkey.gui.main.launch", mock_launch):
+            result = runner.invoke(cli, ["--gui"])
+        assert result.exit_code == 1
+        assert "Error: podman timed out" in result.output
+        assert not isinstance(result.exception, PodmanError)
 
 
 class TestNoGuiFlagBehaviour:
