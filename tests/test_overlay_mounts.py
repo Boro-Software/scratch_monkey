@@ -26,13 +26,16 @@ from scratch_monkey.mountpoints import home_mount_targets, parse_mounts, prepare
 from scratch_monkey.overlay import ensure_running, refresh
 from scratch_monkey.overlay_mounts import (
     OverlayEntry,
+    OverlayHostFacts,
     OverlayMountError,
     ensure_overlay_dirs,
     is_overlay_spec,
     list_overlay_entries,
     mount_id,
     overlay_dirs,
+    overlay_host_facts,
     overlays_root,
+    parse_mountinfo,
     reset_overlays,
     translate_volume,
 )
@@ -189,6 +192,191 @@ class TestBuildRunArgs:
         args, warnings = build_run_args(inst)
         assert not [a for a in args if "upperdir" in a]
         assert any("overlay" in w for w in warnings)
+
+
+# ─── lower-layer limits (graphroot / submounts) ───────────────────────────────
+
+
+def _volumes(inst: Instance, *specs: str) -> None:
+    inst.config.volumes = list(specs)
+
+
+def _skip_warnings(warnings: list[str]) -> list[str]:
+    return [w for w in warnings if "Skipping overlay volume" in w]
+
+
+class TestLowerLimits:
+    def _facts(self, graphroot: Path) -> OverlayHostFacts:
+        return OverlayHostFacts(storage_roots=frozenset({os.path.realpath(graphroot)}))
+
+    def test_source_equal_to_graphroot_skipped(self, scratch_instance, tmp_path):
+        graph = tmp_path / "storage"
+        graph.mkdir()
+        _volumes(scratch_instance, f"{graph}:/c/g:overlay")
+        args, warnings = build_run_args(scratch_instance, host_facts=self._facts(graph))
+        assert not [a for a in args if "upperdir" in a or "/c/g" in a]
+        (msg,) = _skip_warnings(warnings)
+        assert f"{graph}:/c/g:overlay" in msg
+        assert "container storage" in msg and "active mounts" in msg
+        assert "subdirectories" in msg and "'ro'" in msg
+
+    def test_ancestor_of_graphroot_skipped(self, scratch_instance, tmp_path):
+        graph = tmp_path / "home" / ".local" / "share" / "containers" / "storage"
+        graph.mkdir(parents=True)
+        dot_local = tmp_path / "home" / ".local"
+        _volumes(scratch_instance, f"{dot_local}:/c/l:overlay")
+        args, warnings = build_run_args(scratch_instance, host_facts=self._facts(graph))
+        assert "/c/l" not in " ".join(args)
+        assert len(_skip_warnings(warnings)) == 1
+
+    def test_sibling_and_unrelated_kept(self, scratch_instance, tmp_path):
+        graph = tmp_path / "home" / ".local" / "share" / "containers" / "storage"
+        graph.mkdir(parents=True)
+        cargo = tmp_path / "home" / ".cargo"
+        cargo.mkdir()
+        share = tmp_path / "home" / ".local" / "share" / "app"
+        share.mkdir()
+        _volumes(scratch_instance, f"{cargo}:/c/cargo:overlay", f"{share}:/c/app:overlay")
+        args, warnings = build_run_args(scratch_instance, host_facts=self._facts(graph))
+        assert len([a for a in args if "upperdir=" in a]) == 2
+        assert not _skip_warnings(warnings)
+
+    def test_symlinked_source_resolved(self, scratch_instance, tmp_path):
+        """/home -> /var/home: graphroot is the real path, the volume uses the link."""
+        real_home = tmp_path / "var" / "home"
+        graph = real_home / "u" / ".local" / "share" / "containers" / "storage"
+        graph.mkdir(parents=True)
+        (tmp_path / "home").symlink_to(real_home)
+        via_link = tmp_path / "home" / "u" / ".local"
+        _volumes(scratch_instance, f"{via_link}:/c/l:overlay")
+        args, warnings = build_run_args(scratch_instance, host_facts=self._facts(graph))
+        assert "upperdir" not in " ".join(args)
+        assert len(_skip_warnings(warnings)) == 1
+
+    def test_symlinked_graphroot_resolved(self, scratch_instance, tmp_path):
+        """The reverse: the graphroot reported by podman goes through a symlink."""
+        real = tmp_path / "var" / "home" / "u" / ".local" / "share" / "storage"
+        real.mkdir(parents=True)
+        (tmp_path / "home").symlink_to(tmp_path / "var" / "home")
+        runner = MagicMock(spec=PodmanRunner)
+        runner.graph_root.return_value = str(tmp_path / "home" / "u" / ".local" / "share" / "storage")
+        _volumes(scratch_instance, f"{tmp_path / 'var' / 'home' / 'u' / '.local'}:/c/l:overlay")
+        facts = overlay_host_facts(scratch_instance, runner, read_mountinfo=lambda: "")
+        args, warnings = build_run_args(scratch_instance, host_facts=facts)
+        assert "upperdir" not in " ".join(args)
+        assert len(_skip_warnings(warnings)) == 1
+
+    def test_submount_beneath_source_skipped(self, scratch_instance, lower):
+        sub = lower / "deep" / "mnt"
+        sub.mkdir(parents=True)
+        mountinfo = f"36 1 0:30 / {sub} rw - tmpfs tmpfs rw\n"
+        runner = MagicMock(spec=PodmanRunner)
+        runner.graph_root.return_value = None
+        _volumes(scratch_instance, f"{lower}:/c/x:overlay")
+        facts = overlay_host_facts(scratch_instance, runner, read_mountinfo=lambda: mountinfo)
+        args, warnings = build_run_args(scratch_instance, host_facts=facts)
+        assert "upperdir" not in " ".join(args)
+        (msg,) = _skip_warnings(warnings)
+        assert str(sub) in msg
+
+    def test_source_that_is_itself_a_mountpoint_is_fine(self, scratch_instance, lower):
+        mountinfo = f"36 1 0:30 / {lower} rw - tmpfs tmpfs rw\n"
+        runner = MagicMock(spec=PodmanRunner)
+        runner.graph_root.return_value = None
+        _volumes(scratch_instance, f"{lower}:/c/x:overlay")
+        facts = overlay_host_facts(scratch_instance, runner, read_mountinfo=lambda: mountinfo)
+        args, warnings = build_run_args(scratch_instance, host_facts=facts)
+        assert "upperdir" in " ".join(args)
+        assert not _skip_warnings(warnings)
+
+    def test_non_overlay_modes_unaffected(self, scratch_instance, tmp_path):
+        graph = tmp_path / "storage"
+        graph.mkdir()
+        _volumes(scratch_instance, f"{graph}:/c/a:ro", f"{graph}:/c/b:rw", f"{graph}:/c/c")
+        args, warnings = build_run_args(scratch_instance, host_facts=self._facts(graph))
+        for spec in scratch_instance.config.volumes:
+            assert spec in args
+        assert not _skip_warnings(warnings)
+
+    def test_no_facts_skips_nothing(self, scratch_instance, tmp_path):
+        graph = tmp_path / "storage"
+        graph.mkdir()
+        _volumes(scratch_instance, f"{graph}:/c/g:overlay")
+        args, _ = build_run_args(scratch_instance)
+        assert "upperdir" in " ".join(args)
+
+    def test_build_run_args_does_not_touch_proc(self, scratch_instance, lower):
+        _volumes(scratch_instance, f"{lower}:/c/x:overlay")
+        with patch("scratch_monkey.overlay_mounts.read_host_mountinfo") as proc:
+            build_run_args(scratch_instance, host_facts=OverlayHostFacts())
+        proc.assert_not_called()
+
+
+class TestHostFacts:
+    def test_no_overlay_volumes_no_queries(self, scratch_instance):
+        _volumes(scratch_instance, "/a:/b:ro")
+        runner = MagicMock(spec=PodmanRunner)
+        reader = MagicMock(return_value="")
+        facts = overlay_host_facts(scratch_instance, runner, read_mountinfo=reader)
+        assert facts == OverlayHostFacts()
+        runner.graph_root.assert_not_called()
+        reader.assert_not_called()
+
+    def test_gathers_graphroot_and_mounts(self, scratch_instance, tmp_path, lower):
+        runner = MagicMock(spec=PodmanRunner)
+        runner.graph_root.return_value = str(tmp_path / "g")
+        _volumes(scratch_instance, f"{lower}:/c/x:overlay")
+        facts = overlay_host_facts(
+            scratch_instance, runner, read_mountinfo=lambda: "1 0 0:1 / /mnt/x rw - tmpfs t rw\n"
+        )
+        assert facts.storage_roots == {os.path.realpath(tmp_path / "g")}
+        assert "/mnt/x" in facts.mount_points
+
+    def test_unknown_graphroot_is_ignored(self, scratch_instance, lower):
+        runner = MagicMock(spec=PodmanRunner)
+        runner.graph_root.return_value = None
+        _volumes(scratch_instance, f"{lower}:/c/x:overlay")
+        facts = overlay_host_facts(scratch_instance, runner, read_mountinfo=lambda: "")
+        assert facts.storage_roots == frozenset()
+
+    def test_parse_mountinfo_decodes_escapes(self):
+        text = "1 0 0:1 / /a\\040b rw - tmpfs t rw\n2 1 0:2 / /c rw shared:1 - tmpfs t rw\nbad\n"
+        assert parse_mountinfo(text) == {"/a b", "/c"}
+
+
+class TestEnsureRunningSkipsStorageOverlay:
+    def _setup(self, inst, tmp_path):
+        graph = tmp_path / "home" / ".local" / "share" / "containers" / "storage"
+        graph.mkdir(parents=True)
+        _volumes(inst, f"{tmp_path / 'home' / '.local'}:/c/l:overlay")
+        runner = MagicMock(spec=PodmanRunner)
+        runner.container_exists.return_value = False
+        runner.container_running.return_value = False
+        runner.exec_capture.return_value = ""
+        runner.container_mount_destinations.return_value = []
+        runner.graph_root.return_value = str(graph)
+        return runner
+
+    def test_skipped_volume_not_passed_and_warned_on_stderr(self, scratch_instance, tmp_path, capsys):
+        runner = self._setup(scratch_instance, tmp_path)
+        ensure_running(scratch_instance, runner, "scratch_monkey")
+        run_args = runner.run_daemon.call_args.args[2]
+        assert "/c/l" not in " ".join(run_args)
+        assert "Warning: Skipping overlay volume" in capsys.readouterr().err
+
+    def test_on_warning_receives_warnings_instead_of_stderr(self, scratch_instance, tmp_path, capsys):
+        runner = self._setup(scratch_instance, tmp_path)
+        got: list[str] = []
+        ensure_running(scratch_instance, runner, "scratch_monkey", on_warning=got.append)
+        assert len(_skip_warnings(got)) == 1
+        assert capsys.readouterr().err == ""
+
+    def test_refresh_forwards_on_warning(self, scratch_instance, tmp_path):
+        runner = self._setup(scratch_instance, tmp_path)
+        runner.container_exists.side_effect = [True, False]
+        got: list[str] = []
+        refresh(scratch_instance, runner, "scratch_monkey", on_warning=got.append)
+        assert len(_skip_warnings(got)) == 1
 
 
 # ─── directory creation ───────────────────────────────────────────────────────

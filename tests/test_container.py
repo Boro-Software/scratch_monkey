@@ -427,3 +427,40 @@ class TestTimeouts:
             call(runner)
         assert "timeout" not in mock_run.call_args.kwargs
         popen.assert_not_called()
+
+
+class TestGraphRoot:
+    def test_queries_podman_info(self, runner):
+        with patch("subprocess.Popen", return_value=make_proc(0, "/home/u/.local/share/containers/storage\n")) as m:
+            assert runner.graph_root() == "/home/u/.local/share/containers/storage"
+        cmd = m.call_args.args[0]
+        assert cmd[:2] == ["podman", "info"]
+        assert "{{.Store.GraphRoot}}" in cmd
+
+    def test_cached_per_runner(self, runner):
+        with patch("subprocess.Popen", return_value=make_proc(0, "/g\n")) as m:
+            assert runner.graph_root() == "/g"
+            assert runner.graph_root() == "/g"
+        m.assert_called_once()
+        with patch("subprocess.Popen", return_value=make_proc(0, "/other\n")):
+            assert PodmanRunner().graph_root() == "/other"
+
+    def test_none_on_nonzero_exit(self, runner):
+        with patch("subprocess.Popen", return_value=make_proc(125, "", "boom")):
+            assert runner.graph_root() is None
+
+    def test_none_on_empty_output(self, runner):
+        with patch("subprocess.Popen", return_value=make_proc(0, "\n")):
+            assert runner.graph_root() is None
+
+    def test_none_on_timeout_and_failure_not_cached(self, runner):
+        hanging = TestTimeouts()._hanging_proc()
+        with patch("subprocess.Popen", return_value=hanging):
+            assert runner.graph_root() is None
+        with patch("subprocess.Popen", return_value=make_proc(0, "/g\n")):
+            assert runner.graph_root() == "/g"
+
+    def test_uses_query_timeout(self, runner):
+        with patch.object(runner, "_run", return_value=make_result(0, "/g\n")) as m:
+            runner.graph_root()
+        assert m.call_args.kwargs["timeout"] == QUERY_TIMEOUT

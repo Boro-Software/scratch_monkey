@@ -168,3 +168,23 @@ class TestListShowsPodman:
         with patch("scratch_monkey.cli.main.PodmanRunner", return_value=runner):
             result = CliRunner().invoke(cli, ["--instances-dir", str(tmp_path), "list"])
         assert "podman=true" in result.output
+
+
+class TestRunInstanceOverlayLowerLimits:
+    """The direct-run path skips overlay volumes podman's storage lives in."""
+
+    def test_overlay_volume_containing_graphroot_skipped(self, tmp_path):
+        graph = tmp_path / "h" / ".local" / "share" / "containers" / "storage"
+        graph.mkdir(parents=True)
+        src = tmp_path / "h" / ".local"
+        _make_instance_dir(tmp_path, "inst", f'volumes = ["{src}:/c/l:overlay"]\n')
+        runner = MagicMock(spec=PodmanRunner)
+        runner.image_exists.return_value = True
+        runner.graph_root.return_value = str(graph)
+
+        with patch("scratch_monkey.cli.main.PodmanRunner", return_value=runner):
+            result = CliRunner().invoke(cli, ["--instances-dir", str(tmp_path), "run", "inst"])
+
+        podman_args = runner.run.call_args[0][0]
+        assert "/c/l" not in " ".join(podman_args)
+        assert "Skipping overlay volume" in result.output

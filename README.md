@@ -207,6 +207,8 @@ Without `--mount` this also resets leftovers of mounts that are no longer in `sc
 
 `scratch-monkey delete` removes subuid-owned files (overlay changes, mount-point stubs) with `podman unshare rm -rf` when a plain delete is not permitted.
 
+**Limitation:** the kernel cannot use a directory as a lower layer if other mounts exist beneath it. Rootless podman keeps its container storage (`~/.local/share/containers/storage`) in your home, with live mounts of running containers inside, so overlaying `~/.local` (or `~`) fails with `overlayfs: failed to clone lowerpath`. scratch-monkey detects this (podman's storage root, plus any host mount beneath the source), skips that volume with a warning (in the terminal, or in the GUI banner) and starts the container without it. Overlay specific subdirectories instead (`~/.local/bin`, `~/.local/share/<app>`, `~/.cargo`), or use `ro` for the whole tree. `ro` and `rw` volumes are not affected.
+
 ### Mount points inside the home
 
 The instance home is bind-mounted at `/home/<you>` (or `/root`). If a `volumes` entry targets a path *inside* it that doesn't exist yet (e.g. `~/.cargo:/home/<you>/.cargo:ro`), the container runtime would create that directory as container root. Under rootless podman that is a subuid on the host, so you'd be left with an empty directory in the instance's `home/` that you can't delete, and removing the volume wouldn't remove it.
