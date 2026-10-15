@@ -117,3 +117,54 @@ class TestRunInstanceGpu:
         podman_args = runner.run.call_args[0][0]
         assert "/dev/dri" in podman_args
         assert "/dev/video0" in podman_args
+
+
+class TestRunPodmanFlag:
+    def _run(self, tmp_path, args, toml=""):
+        _make_instance_dir(tmp_path, "pinst", toml)
+        runner = MagicMock(spec=PodmanRunner)
+        runner.image_exists.return_value = True
+        with (
+            patch("scratch_monkey.cli.main.PodmanRunner", return_value=runner),
+            patch("scratch_monkey.run_args.os.path.exists", return_value=True),
+        ):
+            result = CliRunner().invoke(
+                cli, ["--instances-dir", str(tmp_path), "run", "pinst", *args]
+            )
+        return result, runner
+
+    def test_podman_flag_sets_config(self, tmp_path):
+        result, runner = self._run(tmp_path, ["--podman"])
+        assert result.exit_code == 0, result.output
+        podman_args = runner.run.call_args[0][0]
+        assert any(a.startswith("CONTAINER_HOST=unix://") for a in podman_args)
+        assert any(a.startswith("DOCKER_HOST=unix://") for a in podman_args)
+
+    def test_no_flag_no_socket(self, tmp_path):
+        result, runner = self._run(tmp_path, [])
+        assert result.exit_code == 0, result.output
+        podman_args = runner.run.call_args[0][0]
+        assert not any(a.startswith("CONTAINER_HOST=") for a in podman_args)
+
+    def test_config_enables_podman(self, tmp_path):
+        result, runner = self._run(tmp_path, [], toml="podman = true\n")
+        assert result.exit_code == 0, result.output
+        podman_args = runner.run.call_args[0][0]
+        assert any(a.startswith("CONTAINER_HOST=") for a in podman_args)
+
+    def test_help_mentions_risk(self):
+        result = CliRunner().invoke(cli, ["run", "--help"])
+        assert "--podman" in result.output
+        assert "host-level" in result.output
+
+
+class TestListShowsPodman:
+    def test_list_shows_podman_true(self, tmp_path):
+        _make_instance_dir(tmp_path, "pl", "podman = true\n")
+        runner = MagicMock(spec=PodmanRunner)
+        runner.image_exists.return_value = False
+        runner.container_exists.return_value = False
+        runner.container_running.return_value = False
+        with patch("scratch_monkey.cli.main.PodmanRunner", return_value=runner):
+            result = CliRunner().invoke(cli, ["--instances-dir", str(tmp_path), "list"])
+        assert "podman=true" in result.output

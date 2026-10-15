@@ -235,6 +235,7 @@ class TestSave:
             cmd="/bin/zsh",
             wayland=True,
             ssh=True,
+            podman=True,
             home="/custom",
             volumes=["/a:/b:ro"],
             env=["X=1"],
@@ -244,6 +245,25 @@ class TestSave:
         save(path, cfg)
         loaded = load(path)
         assert loaded == cfg
+
+    def test_podman_defaults_false(self, tmp_path):
+        assert InstanceConfig().podman is False
+        toml = tmp_path / "scratch.toml"
+        toml.write_text("")
+        assert load(toml).podman is False
+
+    def test_podman_parsed(self, tmp_path):
+        toml = tmp_path / "scratch.toml"
+        toml.write_text("podman = true\n")
+        assert load(toml).podman is True
+
+    def test_podman_written_explicitly(self, tmp_path):
+        path = tmp_path / "scratch.toml"
+        save(path, InstanceConfig())
+        assert "podman = false\n" in path.read_text()
+        save(path, InstanceConfig(podman=True))
+        assert "podman = true\n" in path.read_text()
+        assert load(path).podman is True
 
     def test_save_gpu_and_devices(self, tmp_path):
         path = tmp_path / "scratch.toml"
