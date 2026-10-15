@@ -424,6 +424,7 @@ graph TD
         O4["KEY=value env vars"]
         O5["shared:/shared/x"]
         O6["--device /dev/... (gpu/devices)"]
+        O7["podman.sock + CONTAINER_HOST/DOCKER_HOST (podman = true)"]
     end
 
     always --> mounts

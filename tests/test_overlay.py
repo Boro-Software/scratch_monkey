@@ -283,11 +283,18 @@ class TestSetupFedoraPodman:
         assert "rpm -q podman podman-compose" in installs[0][0][1][-1]
         assert "dnf install -y podman podman-compose" in installs[0][0][1][-1]
 
-    def test_not_installed_by_default(self, mock_runner):
+    def test_install_notice_printed_when_enabled(self, mock_runner, capsys):
+        mock_runner.exec_capture.return_value = ""
+        with patch.dict(os.environ, {"USER": "testuser"}):
+            _setup_fedora_user("c", mock_runner, podman=True)
+        assert "Installing podman client tooling in the container" in capsys.readouterr().err
+
+    def test_not_installed_by_default(self, mock_runner, capsys):
         mock_runner.exec_capture.return_value = ""
         with patch.dict(os.environ, {"USER": "testuser"}):
             _setup_fedora_user("c", mock_runner)
         assert not any("podman-compose" in str(c) for c in mock_runner.exec_capture.call_args_list)
+        assert "Installing podman client tooling" not in capsys.readouterr().err
 
     def test_install_failure_warns_and_continues(self, mock_runner, capsys):
         def fake(container, args, **kw):

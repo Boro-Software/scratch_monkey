@@ -96,6 +96,10 @@ def _setup_fedora_user(
             logger.debug("sudo install skipped: %s", exc)
 
     if podman:
+        print(
+            "Installing podman client tooling in the container (this may take a minute)...",
+            file=sys.stderr,
+        )
         try:
             runner.exec_capture(
                 container_name,
