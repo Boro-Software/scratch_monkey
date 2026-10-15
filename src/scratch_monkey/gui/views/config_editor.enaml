@@ -5,6 +5,7 @@ from enaml.widgets.api import (
     ObjectCombo
 )
 from enaml.core.api import Conditional, Looper
+from enaml.layout.api import hbox
 
 from scratch_monkey.gui.views.dialogs.create_shared_dialog import CreateSharedDialog
 
@@ -113,11 +114,18 @@ enamldef ConfigEditorPanel(Container): editor:
             Looper:
                 iterable << (list(range(len(editor.model.volume_entries))) if editor.model else [])
 
-                HGroup:
-                    align_widths = False
+                Container:
                     padding = 0
-                    Field:
+                    # Equal-width path fields: an HGroup gives the solver no
+                    # relationship between the two stretchy Fields, so one hogs the
+                    # width. See UI_LAYOUT.md ("Paired fields share width").
+                    constraints = [
+                        hbox(host_field, container_field, mode_combo, remove_btn),
+                        host_field.width == container_field.width,
+                    ]
+                    Field: host_field:
                         hug_width = 'ignore'
+                        minimum_size = (150, 0)
                         text << (editor.model.volume_entries[loop.item].host_path if editor.model and loop.item < len(editor.model.volume_entries) else "")
                         text ::
                             if editor.model and loop.item < len(editor.model.volume_entries):
@@ -126,8 +134,9 @@ enamldef ConfigEditorPanel(Container): editor:
                         placeholder = "Host path"
                         submit_triggers = ['lost_focus', 'return_pressed', 'auto_sync']
 
-                    Field:
+                    Field: container_field:
                         hug_width = 'ignore'
+                        minimum_size = (150, 0)
                         text << (editor.model.volume_entries[loop.item].container_path if editor.model and loop.item < len(editor.model.volume_entries) else "")
                         text ::
                             if editor.model and loop.item < len(editor.model.volume_entries):
@@ -136,7 +145,7 @@ enamldef ConfigEditorPanel(Container): editor:
                         placeholder = "Container path"
                         submit_triggers = ['lost_focus', 'return_pressed', 'auto_sync']
 
-                    ObjectCombo:
+                    ObjectCombo: mode_combo:
                         items = ["ro", "rw"]
                         selected << (editor.model.volume_entries[loop.item].mode if editor.model and loop.item < len(editor.model.volume_entries) else "ro")
                         selected ::
@@ -144,7 +153,7 @@ enamldef ConfigEditorPanel(Container): editor:
                                 editor.model.volume_entries[loop.item].mode = selected
                                 editor.model.check_dirty()
 
-                    PushButton:
+                    PushButton: remove_btn:
                         text = "\u2717"
                         minimum_size = (30, 0)
                         maximum_size = (30, 16777215)

@@ -1,6 +1,8 @@
 """Create Instance dialog for scratch-monkey GUI."""
 
-from enaml.widgets.api import Dialog, Container, Label, Field, CheckBox, PushButton, HGroup, VGroup
+from enaml.widgets.api import (
+    Dialog, Container, Label, Field, CheckBox, PushButton, HGroup, VGroup, ScrollArea
+)
 
 from scratch_monkey.gui.views.config_editor import ConfigEditorPanel
 from scratch_monkey.gui.dialog_helpers import make_on_done, start_working
@@ -13,6 +15,7 @@ enamldef CreateInstanceDialog(Dialog): dlg:
     attr working : bool = False
 
     title = "Create Instance"
+    initial_size = (760, 680)   # wide for path entry, short enough for laptop screens; still resizable
 
     closing ::
         # Don't let the user dismiss the dialog while the action is in flight.
@@ -38,10 +41,12 @@ enamldef CreateInstanceDialog(Dialog): dlg:
                 text = "Copy /etc/skel"
                 tool_tip = "Copy skeleton files into the home directory"
 
-            ConfigEditorPanel:
-                model = dlg.instance_model
-                available_shared << dlg.app_model.available_shared if dlg.app_model else []
-                app_model = dlg.app_model
+            # Only the config groups scroll; name, checkboxes, status and buttons stay visible.
+            ScrollArea:
+                ConfigEditorPanel:
+                    model = dlg.instance_model
+                    available_shared << dlg.app_model.available_shared if dlg.app_model else []
+                    app_model = dlg.app_model
 
             Label: error_label:
                 text << dlg._error_msg
