@@ -179,6 +179,76 @@ class TestStopCommand:
         assert result.exit_code != 0
 
 
+class TestRefreshCommand:
+    def test_refresh_preserves_by_default(self, tmp_path):
+        _make_instance_dir(tmp_path, "testinst", 'overlay_id = "sm-test123"\n')
+        mock = MagicMock(spec=PodmanRunner)
+        mock.image_exists.return_value = True
+        mock.container_exists.return_value = True
+        mock.container_running.return_value = False
+        r = CliRunner()
+        with patch("scratch_monkey.cli.main.PodmanRunner", return_value=mock):
+            result = r.invoke(cli, ["--instances-dir", str(tmp_path), "refresh", "testinst"])
+        assert result.exit_code == 0
+        assert "Refreshed" in result.output
+        assert "committed" in result.output
+        mock.commit.assert_called_once_with("sm-test123", "testinst")
+        mock.remove.assert_called_once_with("sm-test123")
+        # No confirmation prompt should be needed on the default path.
+        assert "Discard" not in result.output
+
+    def test_refresh_discard_prompts_and_skips_commit(self, tmp_path):
+        _make_instance_dir(tmp_path, "testinst", 'overlay_id = "sm-test123"\n')
+        mock = MagicMock(spec=PodmanRunner)
+        mock.image_exists.return_value = True
+        mock.container_exists.return_value = True
+        mock.container_running.return_value = False
+        r = CliRunner()
+        with patch("scratch_monkey.cli.main.PodmanRunner", return_value=mock):
+            result = r.invoke(
+                cli, ["--instances-dir", str(tmp_path), "refresh", "--discard", "testinst"], input="y\n",
+            )
+        assert result.exit_code == 0
+        assert "discarded" in result.output
+        mock.commit.assert_not_called()
+        mock.remove.assert_called_once_with("sm-test123")
+
+    def test_refresh_discard_aborted(self, tmp_path):
+        _make_instance_dir(tmp_path, "testinst", 'overlay_id = "sm-test123"\n')
+        mock = MagicMock(spec=PodmanRunner)
+        mock.image_exists.return_value = True
+        mock.container_exists.return_value = True
+        r = CliRunner()
+        with patch("scratch_monkey.cli.main.PodmanRunner", return_value=mock):
+            result = r.invoke(
+                cli, ["--instances-dir", str(tmp_path), "refresh", "--discard", "testinst"], input="n\n",
+            )
+        assert result.exit_code != 0
+        mock.commit.assert_not_called()
+        mock.remove.assert_not_called()
+
+    def test_refresh_nonexistent(self, tmp_path):
+        d = tmp_path / "instances"
+        d.mkdir()
+        r = CliRunner()
+        with patch("scratch_monkey.cli.main.PodmanRunner", return_value=MagicMock(spec=PodmanRunner)):
+            result = r.invoke(cli, ["--instances-dir", str(d), "refresh", "ghost"])
+        assert result.exit_code != 0
+
+    def test_refresh_missing_container_just_starts(self, tmp_path):
+        """No existing overlay container — refresh just creates/starts one."""
+        _make_instance_dir(tmp_path, "testinst", 'overlay_id = "sm-test123"\n')
+        mock = MagicMock(spec=PodmanRunner)
+        mock.image_exists.return_value = True
+        mock.container_exists.return_value = False
+        r = CliRunner()
+        with patch("scratch_monkey.cli.main.PodmanRunner", return_value=mock):
+            result = r.invoke(cli, ["--instances-dir", str(tmp_path), "refresh", "testinst"])
+        assert result.exit_code == 0
+        mock.commit.assert_not_called()
+        mock.run_daemon.assert_called_once()
+
+
 class TestBuildInstanceCommand:
     def test_build_calls_build(self, tmp_path):
         _make_instance_dir(tmp_path, "testinst")

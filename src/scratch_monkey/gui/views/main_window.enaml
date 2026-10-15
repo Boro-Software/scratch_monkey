@@ -9,6 +9,7 @@ from enaml.widgets.api import (
     MainWindow, Container, Label, ToolBar, Action, Splitter, SplitItem, ProgressBar, HGroup
 )
 from enaml.layout.api import vbox, hbox
+from enaml.styling import StyleSheet, Style, Setter
 
 from scratch_monkey.gui.views.instance_list import InstanceListPanel
 from scratch_monkey.gui.views.instance_detail import InstanceDetailPanel
@@ -21,6 +22,16 @@ enamldef ScratchMonkeyWindow(MainWindow): win:
     title = "scratch-monkey"
     initial_size = (1200, 900)
     minimum_size = (900, 600)
+
+    StyleSheet:
+        Style:
+            style_class = "error-banner"
+            Setter:
+                field = "background"
+                value = "#c62828"
+            Setter:
+                field = "color"
+                value = "#ffffff"
 
     closing ::
         if app_model.has_unsaved_changes():
@@ -49,8 +60,26 @@ enamldef ScratchMonkeyWindow(MainWindow): win:
 
     Container:
         constraints = [
-            vbox(splitter, status_bar)
+            vbox(banner, splitter, status_bar)
         ]
+
+        HGroup: banner:
+            # `banner` is named directly in the outer vbox(), so — per the
+            # status_bar fix above — its height must be a deterministic
+            # function of state rather than left to implicit hidden-widget
+            # sizing, or toggling it can make the constraint solver resize
+            # the Splitter unpredictably. Here we pin the height explicitly
+            # to 0 when there's no error and to 28 when there is, instead of
+            # relying on `visible` alone to collapse it.
+            align_widths = False
+            padding = 4
+            trailing_spacer = None
+            visible << bool(app_model.error_message)
+            minimum_size << (0, 28) if app_model.error_message else (0, 0)
+            maximum_size << (16777215, 28) if app_model.error_message else (16777215, 0)
+            Label:
+                text << app_model.error_message
+                style_class = "error-banner"
 
         Splitter: splitter:
             enabled << not app_model.busy

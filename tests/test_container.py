@@ -207,12 +207,48 @@ class TestRunDaemon:
             runner.run_daemon("mycontainer", "myimage", ["--network=host"])
             args = mock_run.call_args[0][0]
             assert "run" in args
-            assert "-d" in args
+            assert "-dit" in args
             assert "--name" in args
             assert "mycontainer" in args
             assert "myimage" in args
-            assert "sleep" in args
-            assert "infinity" in args
+            assert "--init" in args
+
+    def test_captures_output_and_raises_with_stderr_on_failure(self, runner):
+        """run_daemon captures stderr so PodmanError carries real failure detail
+        (unlike run()/build()/exec, which stream interactively and don't capture)."""
+        with patch(
+            "subprocess.run",
+            return_value=make_result(126, stderr="OCI runtime error: exec format error"),
+        ) as mock_run:
+            with pytest.raises(PodmanError) as excinfo:
+                runner.run_daemon("mycontainer", "myimage", [])
+            assert mock_run.call_args.kwargs["capture_output"] is True
+            assert "exec format error" in str(excinfo.value)
+            assert "exec format error" in excinfo.value.stderr
+
+
+class TestCommit:
+    def test_commit(self, runner):
+        with patch("subprocess.run", return_value=make_result(0)) as mock_run:
+            runner.commit("mycontainer", "myimage")
+            args = mock_run.call_args[0][0]
+            assert "commit" in args
+            assert "mycontainer" in args
+            assert "myimage" in args
+
+    def test_commit_order(self, runner):
+        """commit() passes container before image."""
+        with patch("subprocess.run", return_value=make_result(0)) as mock_run:
+            runner.commit("mycontainer", "myimage")
+            args = mock_run.call_args[0][0]
+            container_idx = args.index("mycontainer")
+            image_idx = args.index("myimage")
+            assert container_idx < image_idx
+
+    def test_commit_raises_on_failure(self, runner):
+        with patch("subprocess.run", return_value=make_result(1, stderr="no such container")):
+            with pytest.raises(PodmanError):
+                runner.commit("missing", "myimage")
 
 
 class TestRunNoCaptureError:

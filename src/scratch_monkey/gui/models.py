@@ -39,6 +39,7 @@ from ..instance import (
     skel_copy,
 )
 from ..overlay import ensure_running as overlay_ensure_running
+from ..overlay import refresh as overlay_refresh
 from ..overlay import reset as overlay_reset
 from ..run_args import DEFAULT_BASE_IMAGE, FEDORA_IMAGE, PROJECT_DIR
 from ..shared import list_shared, parse_shared_entry
@@ -280,11 +281,15 @@ class AppModel(Atom):
     # Using Value() (not @property) so Enaml bindings re-fire when it changes.
     selected = Value()
     status_message = Str("")
+    error_message = Str("")
     busy = Bool(False)
     _polling = Bool(False)
     available_shared = List(str)
     # PodmanRunner stored as Value so Atom allows non-member attributes
     _runner = Value()
+    # Status text of the operation currently in flight, shown if a second
+    # action is clicked while busy (see _run_async).
+    _busy_status = Str("")
 
     def __init__(self, instances_dir: Path, runner: PodmanRunner | None = None) -> None:
         super().__init__()
@@ -319,9 +324,12 @@ class AppModel(Atom):
             on_error: Optional callback(exception) called on the GUI thread if work raises.
         """
         if self.busy:
+            self.status_message = f"Busy — please wait ({self._busy_status!r} still running)"
             return
         self.busy = True
+        self._busy_status = status
         self.status_message = status
+        self.error_message = ""
 
         def _thread():
             try:
@@ -330,6 +338,7 @@ class AppModel(Atom):
                 _exc = exc
                 def _on_err(e=_exc):
                     self.busy = False
+                    self.error_message = str(e)
                     if on_error:
                         on_error(e)
                     else:
@@ -553,6 +562,36 @@ class AppModel(Atom):
             self.status_message = f"Error: {exc}"
 
         self._run_async(f"Resetting overlay for {name!r}...", work, on_success, on_error)
+
+    def refresh_overlay(self, name: str) -> None:
+        """Recreate the overlay container for the named instance, preserving installs."""
+        instances_dir = Path(self.instances_dir)
+        inst_dir = instances_dir / name
+        if not inst_dir.is_dir():
+            self.status_message = f"Instance {name!r} not found"
+            return
+        inst = Instance.from_directory(inst_dir)
+        # Determine image: per-instance build or base image (mirrors start_instance)
+        if self._runner.image_exists(name):
+            image = name
+        else:
+            image = detect_base_image(inst_dir) or DEFAULT_BASE_IMAGE
+
+        def work():
+            overlay_refresh(inst, self._runner, image)
+
+        def on_success(_result):
+            for m in self.instances:
+                if m.name == name:
+                    m.overlay_running = True
+                    break
+            self.status_message = f"Refreshed {name!r} (installs preserved)"
+
+        def on_error(exc):
+            self.poll_status()
+            self.status_message = f"Error refreshing {name!r}: {exc}"
+
+        self._run_async(f"Refreshing {name!r}...", work, on_success, on_error)
 
     def delete_instance(self, name: str) -> None:
         """Delete the named instance (no confirmation — caller must confirm)."""
