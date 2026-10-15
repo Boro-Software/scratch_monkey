@@ -38,7 +38,7 @@ enamldef CloneDialog(Dialog): dlg:
                     enabled << bool(name_field.text.strip())
                     clicked ::
                         start_working(dlg)
-                        dlg.app_model.clone_instance(dlg.instance_name, name_field.text.strip(), make_on_done(dlg))
+                        dlg.app_model.instance_actions.clone(dlg.instance_name, name_field.text.strip(), make_on_done(dlg))
                 PushButton:
                     text = "Cancel"
                     clicked ::

@@ -39,7 +39,7 @@ enamldef RenameDialog(Dialog): dlg:
                     enabled << bool(name_field.text.strip()) and name_field.text.strip() != dlg.instance_name
                     clicked ::
                         start_working(dlg)
-                        dlg.app_model.rename_instance(dlg.instance_name, name_field.text.strip(), make_on_done(dlg))
+                        dlg.app_model.instance_actions.rename(dlg.instance_name, name_field.text.strip(), make_on_done(dlg))
                 PushButton:
                     text = "Cancel"
                     clicked ::

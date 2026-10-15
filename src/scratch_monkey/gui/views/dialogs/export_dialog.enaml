@@ -33,7 +33,7 @@ enamldef ExportDialog(Dialog): dlg:
                     text = "Export"
                     enabled << bool(cmd_field.text.strip())
                     clicked ::
-                        err = dlg.app_model.export_command(
+                        err = dlg.app_model.tools.export_command(
                             dlg.instance_name,
                             cmd_field.text.strip(),
                             bin_field.text.strip(),
