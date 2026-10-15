@@ -201,10 +201,15 @@ class InstanceInfo:
     overlay_running: bool
     config: InstanceConfig
     base_image: str | None = None
-    # Set when podman could not be queried for this instance (e.g. timed out
-    # on a stuck container lock). image_built/overlay_running are then unknown
-    # and reported as False.
-    status_error: str | None = None
+    # Set when podman could not be queried (e.g. timed out on a stuck container
+    # lock). The corresponding bool above is then unknown and reported as False.
+    image_error: str | None = None
+    overlay_error: str | None = None
+
+    @property
+    def status_error(self) -> str | None:
+        """First query error for this instance, or None if all queries succeeded."""
+        return self.image_error or self.overlay_error
 
 
 def list_all(instances_dir: Path, runner: PodmanRunner) -> list[InstanceInfo]:
@@ -223,16 +228,16 @@ def list_all(instances_dir: Path, runner: PodmanRunner) -> list[InstanceInfo]:
         config = load(config_path)
         image_built = False
         overlay_running = False
-        status_errors: list[str] = []
+        image_error = overlay_error = None
         try:
             image_built = runner.image_exists(entry.name)
         except PodmanError as e:
-            status_errors.append(str(e))
+            image_error = str(e)
         overlay_name = config.overlay_id if config.overlay_id else f"{entry.name}-overlay"
         try:
             overlay_running = runner.container_running(overlay_name)
         except PodmanError as e:
-            status_errors.append(str(e))
+            overlay_error = str(e)
         base_image = detect_base_image(entry)
         results.append(
             InstanceInfo(
@@ -242,7 +247,8 @@ def list_all(instances_dir: Path, runner: PodmanRunner) -> list[InstanceInfo]:
                 overlay_running=overlay_running,
                 config=config,
                 base_image=base_image,
-                status_error=status_errors[0] if status_errors else None,
+                image_error=image_error,
+                overlay_error=overlay_error,
             )
         )
     return results

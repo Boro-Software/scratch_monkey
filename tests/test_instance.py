@@ -240,6 +240,8 @@ class TestListAll:
         assert result["beta"].overlay_running is False
         assert result["beta"].image_built is True  # image query succeeded
         assert "stuck lock" in result["beta"].status_error
+        assert result["beta"].overlay_error == result["beta"].status_error
+        assert result["beta"].image_error is None
 
     def test_image_query_failure_recorded(self, instances_dir, project_dir, mock_runner):
         from scratch_monkey.container import PodmanError
@@ -250,6 +252,8 @@ class TestListAll:
         info = list_all(instances_dir, mock_runner)[0]
         assert info.image_built is False
         assert info.status_error == "timed out"
+        assert info.image_error == "timed out"
+        assert info.overlay_error is None
 
     def test_non_podman_errors_still_propagate(self, instances_dir, project_dir, mock_runner):
         create("alpha", instances_dir, "scratch_monkey", project_dir)

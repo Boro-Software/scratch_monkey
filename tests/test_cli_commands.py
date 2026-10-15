@@ -304,5 +304,21 @@ class TestListCommand:
         assert "stopped" in lines["good"]
         assert "unknown" in lines["stuck"]
         assert "stopped" not in lines["stuck"]
+        # image query succeeded, so only the OVERLAY column is unknown
+        assert lines["stuck"].split()[1:3] == ["yes", "unknown"]
         assert "status unknown for 'stuck'" in result.stderr
         assert "lock stuck" in result.stderr
+
+    def test_list_image_failure_only_marks_image_column(self, tmp_path):
+        from scratch_monkey.container import PodmanError
+
+        _make_instance_dir(tmp_path, "inst")
+        mock = MagicMock(spec=PodmanRunner)
+        mock.image_exists.side_effect = PodmanError("timed out")
+        mock.container_running.return_value = True
+        r = CliRunner()
+        with patch("scratch_monkey.cli.main.PodmanRunner", return_value=mock):
+            result = r.invoke(cli, ["--instances-dir", str(tmp_path), "list"])
+        row = result.stdout.splitlines()[1].split()
+        assert row[1:3] == ["unknown", "running"]
+        assert "status unknown for 'inst'" in result.stderr

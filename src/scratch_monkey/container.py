@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 # CLI or GUI.
 QUERY_TIMEOUT: float = 15
 
+# Seconds to let a timed-out podman process exit after SIGTERM before SIGKILL.
+TERMINATE_GRACE: float = 5
+
 
 class PodmanError(Exception):
     """Raised when a podman command fails."""
@@ -44,22 +47,19 @@ class PodmanRunner:
         timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         cmd = [self.podman_bin, *self.extra_args, *args]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=capture,
-                text=True,
-                input=input,
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            target = " ".join(args)
-            raise PodmanError(
-                f"podman {target!r} timed out: podman did not respond within "
-                f"{timeout:g}s; a container lock may be stuck. Check with "
-                "`podman ps -a`; if it also hangs, quit any long-running podman "
-                "clients (e.g. Podman Desktop) or run `podman system renumber` / reboot.",
-            ) from exc
+        if timeout is None:
+            result = subprocess.run(cmd, capture_output=capture, text=True, input=input)
+        else:
+            try:
+                result = self._run_with_timeout(cmd, capture, input, timeout)
+            except subprocess.TimeoutExpired as exc:
+                target = " ".join(args)
+                raise PodmanError(
+                    f"podman {target!r} timed out: podman did not respond within "
+                    f"{timeout:g}s; a container lock may be stuck. Check with "
+                    "`podman ps -a`; if it also hangs, quit any long-running podman "
+                    "clients (e.g. Podman Desktop) or run `podman system renumber` / reboot.",
+                ) from exc
         if check and result.returncode != 0:
             stderr = result.stderr or ""
             raise PodmanError(
@@ -68,6 +68,40 @@ class PodmanRunner:
                 stderr=stderr,
             )
         return result
+
+    @staticmethod
+    def _run_with_timeout(
+        cmd: list[str], capture: bool, input: str | None, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        """Like subprocess.run, but stop podman gracefully on timeout.
+
+        subprocess.run kills a timed-out child with SIGKILL. Podman's container
+        locks are shared-memory mutexes that a SIGKILLed process never releases,
+        so killing a podman that holds one would create the very stuck-lock state
+        we are trying to survive. SIGTERM lets podman run its shutdown handler and
+        release locks; SIGKILL is only a last resort if it ignores SIGTERM.
+
+        Raises subprocess.TimeoutExpired once the process has been stopped.
+        """
+        pipe = subprocess.PIPE if capture else None
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE if input is not None else None,
+            stdout=pipe,
+            stderr=pipe,
+            text=True,
+        )
+        try:
+            stdout, stderr = proc.communicate(input=input, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            proc.terminate()
+            try:
+                proc.communicate(timeout=TERMINATE_GRACE)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            raise subprocess.TimeoutExpired(cmd, timeout) from exc
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
     # ── image queries ─────────────────────────────────────────────────────────
 
