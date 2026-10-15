@@ -392,3 +392,54 @@ class TestOverlayControllerWiring:
             "Resetting overlay for 'myinst'...",
             "Refreshing 'myinst'...",
         ]
+
+
+class TestResetOverlayData:
+    """OverlayController.reset_overlay_data discards overlay-mode volume changes."""
+
+    def test_not_found(self, tmp_path):
+        app, _, _ = make_app(tmp_path)
+        app.overlays.reset_overlay_data("nonexistent")
+        assert app.busy is False
+        assert "not found" in app.status_message
+
+    def test_nothing_to_reset(self, tmp_path):
+        import threading
+        from unittest.mock import patch
+
+        app, _, project_dir = make_app(tmp_path)
+        with patch("scratch_monkey.gui.controllers.instances.PROJECT_DIR", project_dir):
+            create_sync(app, "myinst")
+        done = threading.Event()
+        with (
+            sync_deferred_call(done),
+            patch("scratch_monkey.gui.controllers.overlays.reset_overlays") as reset,
+        ):
+            app.overlays.reset_overlay_data("myinst")
+            wait(done)
+        reset.assert_not_called()
+        assert "No overlay data" in app.status_message
+
+    def test_resets_and_marks_stopped(self, tmp_path):
+        import threading
+        from unittest.mock import patch
+
+        app, instances_dir, project_dir = make_app(tmp_path)
+        with patch("scratch_monkey.gui.controllers.instances.PROJECT_DIR", project_dir):
+            create_sync(app, "myinst")
+        (instances_dir / "myinst" / ".overlays" / "x-1").mkdir(parents=True)
+        inst = next(i for i in app.instances if i.name == "myinst")
+        inst.overlay_running = True
+        done = threading.Event()
+        with (
+            sync_deferred_call(done),
+            patch(
+                "scratch_monkey.gui.controllers.overlays.reset_overlays", return_value=True
+            ) as reset,
+        ):
+            app.overlays.reset_overlay_data("myinst")
+            wait(done)
+        reset.assert_called_once()
+        assert app.busy is False
+        assert "Reset 1 overlay mount(s)" in app.status_message
+        assert inst.overlay_running is False

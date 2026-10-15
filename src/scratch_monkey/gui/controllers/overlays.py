@@ -9,6 +9,7 @@ from ...instance import Instance, detect_base_image
 from ...overlay import ensure_running as overlay_ensure_running
 from ...overlay import refresh as overlay_refresh
 from ...overlay import reset as overlay_reset
+from ...overlay_mounts import list_overlay_entries, reset_overlays
 from ...run_args import DEFAULT_BASE_IMAGE
 from ..desktop import _launch_in_terminal
 
@@ -130,6 +131,45 @@ class OverlayController:
             app.poll_status()
 
         app.run_async(f"Resetting overlay for {name!r}...", work, on_success, on_error)
+
+    def reset_overlay_data(self, name: str) -> None:
+        """Discard container-side changes to overlay-mode volumes of the instance.
+
+        Stops a running overlay container first (and leaves it stopped).
+        """
+        app = self._app
+        inst_dir = Path(app.instances_dir) / name
+        if not inst_dir.is_dir():
+            app.status_message = f"Instance {name!r} not found"
+            return
+        inst = Instance.from_directory(inst_dir)
+        overlay_name = inst.config.overlay_id or f"{name}-overlay"
+
+        def work():
+            entries = list_overlay_entries(inst)
+            if not entries:
+                return None
+            return len(entries), reset_overlays(inst, app.runner, entries, overlay_name)
+
+        def on_success(result):
+            if result is None:
+                app.status_message = f"No overlay data to reset for {name!r}"
+                return
+            count, stopped = result
+            if stopped:
+                for m in app.instances:
+                    if m.name == name:
+                        m.overlay_running = False
+                        break
+            app.status_message = f"Reset {count} overlay mount(s) for {name!r}" + (
+                " (container stopped)" if stopped else ""
+            )
+
+        def on_error(exc):
+            app.status_message = f"Error resetting overlay data for {name!r}: {exc}"
+            app.poll_status()
+
+        app.run_async(f"Resetting overlay data for {name!r}...", work, on_success, on_error)
 
     def refresh(self, name: str) -> None:
         """Recreate the overlay container for the named instance, preserving installs."""

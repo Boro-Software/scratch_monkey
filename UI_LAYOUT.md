@@ -143,7 +143,7 @@ members; views call them as `app_model.<controller>.<action>(...)`:
 | Member | Class | Actions |
 |---|---|---|
 | `app_model.instance_actions` | `InstanceController` | `create`, `clone`, `rename`, `delete` |
-| `app_model.overlays` | `OverlayController` | `start`, `stop`, `build`, `enter`, `reset`, `refresh` |
+| `app_model.overlays` | `OverlayController` | `start`, `stop`, `build`, `enter`, `reset`, `reset_overlay_data`, `refresh` |
 | `app_model.shared` | `SharedVolumeController` | `create` |
 | `app_model.tools` | `ToolsController` | `export_command`, `edit_file`, `edit_config`, `open_directory`, `open_terminal` |
 
