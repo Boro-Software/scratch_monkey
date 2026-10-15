@@ -2,56 +2,11 @@
 
 from enaml.widgets.api import (
     Container, Label, PushButton, GroupBox, CheckBox, Field, VGroup, HGroup,
-    ObjectCombo, Dialog
+    ObjectCombo
 )
 from enaml.core.api import Conditional, Looper
 
-from scratch_monkey.gui.dialog_helpers import make_on_done, start_working
-
-
-enamldef CreateSharedDialog(Dialog): dlg:
-    attr app_model
-    attr _error_msg : str = ""
-    attr working : bool = False
-
-    title = "Create Shared Volume"
-
-    closing ::
-        # Don't let the user dismiss the dialog while the action is in flight.
-        if dlg.working:
-            change['value'].ignore()
-
-    Container:
-        enabled << not dlg.working
-        VGroup:
-            Label:
-                text = "Volume Name:"
-
-            Field: name_field:
-                placeholder = "my-shared-vol"
-                submit_triggers = ['lost_focus', 'return_pressed', 'auto_sync']
-
-            Label: error_label:
-                text << dlg._error_msg
-                visible << bool(dlg._error_msg)
-
-            Label: working_label:
-                text = "Working..."
-                visible << dlg.working
-
-            HGroup:
-                padding = 0
-                PushButton:
-                    text = "Create"
-                    enabled << bool(name_field.text.strip())
-                    clicked ::
-                        start_working(dlg)
-                        dlg.app_model.create_shared_volume(name_field.text.strip(), make_on_done(dlg))
-
-                PushButton:
-                    text = "Cancel"
-                    clicked ::
-                        dlg.close()
+from scratch_monkey.gui.views.dialogs.create_shared_dialog import CreateSharedDialog
 
 
 enamldef ConfigEditorPanel(Container): editor:

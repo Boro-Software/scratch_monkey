@@ -59,7 +59,7 @@ class _PodmanErrorGroup(click.Group):
             ctx.exit(1)
 
 
- @click.group(cls=_PodmanErrorGroup, invoke_without_command=True, no_args_is_help=True)
+@click.group(cls=_PodmanErrorGroup, invoke_without_command=True, no_args_is_help=True)
 @click.option(
     "--instances-dir",
     envvar="SCRATCH_MONKEY_INSTANCES_DIR",
