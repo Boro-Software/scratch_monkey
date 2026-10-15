@@ -42,7 +42,24 @@ from ..shared import (
 )
 
 
-@click.group()
+class _PodmanErrorGroup(click.Group):
+    """Click group that reports any uncaught PodmanError as a clean CLI error.
+
+    Query methods (image_exists, container_running, ...) raise PodmanError on
+    timeout, and many commands call them outside a try/except. Without this the
+    user would get a traceback instead of ``Error: <message>`` and exit code 1.
+    Per-command handlers still run first; this only catches what they miss.
+    """
+
+    def invoke(self, ctx: click.Context):
+        try:
+            return super().invoke(ctx)
+        except PodmanError as e:
+            click.echo(f"Error: {e}", err=True)
+            ctx.exit(1)
+
+
+@click.group(cls=_PodmanErrorGroup)
 @click.option(
     "--instances-dir",
     envvar="SCRATCH_MONKEY_INSTANCES_DIR",
@@ -404,11 +421,7 @@ def stop(ctx: click.Context, name: str) -> None:
         click.echo(f"Overlay container for {name!r} is already stopped")
         return
 
-    try:
-        runner.stop(overlay_name)
-    except PodmanError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    runner.stop(overlay_name)  # PodmanError is reported by the top-level handler
     click.echo(f"Stopped {name!r}")
 
 

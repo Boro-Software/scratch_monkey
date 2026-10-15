@@ -99,7 +99,8 @@ class PodmanRunner:
                 proc.communicate(timeout=TERMINATE_GRACE)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait()
+                # communicate() (not wait()) drains and closes the pipes.
+                proc.communicate()
             raise subprocess.TimeoutExpired(cmd, timeout) from exc
         return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 

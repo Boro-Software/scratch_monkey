@@ -110,6 +110,11 @@ enamldef InstanceListPanel(Container): panel:
             Setter:
                 field = "color"
                 value = "#cc2222"
+        Style:
+            style_class = "status-unknown"
+            Setter:
+                field = "color"
+                value = "#cc8800"
 
     constraints = [vbox(scroll, new_btn)]
 
@@ -126,9 +131,11 @@ enamldef InstanceListPanel(Container): panel:
                     PushButton:
                         checkable = True
                         checked << inst.overlay_running
-                        text = "\u25CF"
-                        style_class << ("status-running" if inst.overlay_running else "status-stopped")
-                        tool_tip << ("Running — click to stop" if inst.overlay_running else "Stopped")
+                        # status_error set => podman could not be queried (e.g. stuck
+                        # container lock): show "unknown", not a misleading "stopped".
+                        text << ("?" if inst.status_error else "\u25CF")
+                        style_class << ("status-unknown" if inst.status_error else ("status-running" if inst.overlay_running else "status-stopped"))
+                        tool_tip << (("Status unknown: " + inst.status_error) if inst.status_error else ("Running — click to stop" if inst.overlay_running else "Stopped"))
                         minimum_size = (24, 0)
                         maximum_size = (24, 16777215)
                         toggled ::
