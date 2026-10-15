@@ -161,6 +161,7 @@ class InstanceModel(Atom):
     cmd = Str("/bin/bash")
     wayland = Bool(False)
     ssh = Bool(False)
+    podman = Bool(False)
     x11 = Bool(False)
     home = Str("")
     overlay = Bool(False)
@@ -191,6 +192,7 @@ class InstanceModel(Atom):
         m.cmd = cfg.cmd
         m.wayland = cfg.wayland
         m.ssh = cfg.ssh
+        m.podman = cfg.podman
         m.x11 = cfg.x11
         m.home = cfg.home
         m.overlay = cfg.overlay
@@ -210,6 +212,7 @@ class InstanceModel(Atom):
             cmd=self.cmd,
             wayland=self.wayland,
             ssh=self.ssh,
+            podman=self.podman,
             x11=self.x11,
             home=self.home,
             volumes=[
@@ -229,7 +232,7 @@ class InstanceModel(Atom):
         )
 
     @observe(
-        'cmd', 'wayland', 'ssh', 'x11', 'home', 'overlay', 'sudo', 'gpu', 'devices',
+        'cmd', 'wayland', 'ssh', 'podman', 'x11', 'home', 'overlay', 'sudo', 'gpu', 'devices',
         'volume_entries', 'env_vars', 'shared_entries',
     )
     def _on_config_change(self, change):
@@ -248,6 +251,7 @@ class InstanceModel(Atom):
             self.cmd = cfg.cmd
             self.wayland = cfg.wayland
             self.ssh = cfg.ssh
+            self.podman = cfg.podman
             self.x11 = cfg.x11
             self.home = cfg.home
             self.overlay = cfg.overlay

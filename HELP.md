@@ -424,6 +424,7 @@ graph TD
         O4["KEY=value env vars"]
         O5["shared:/shared/x"]
         O6["--device /dev/... (gpu/devices)"]
+        O7["podman.sock + CONTAINER_HOST/DOCKER_HOST (podman = true)"]
     end
 
     always --> mounts
@@ -643,6 +644,7 @@ All fields in `scratch.toml` are optional.
 | `cmd` | string | `/bin/bash` | Shell command to run on entry |
 | `wayland` | bool | `false` | Forward Wayland display socket |
 | `ssh` | bool | `false` | Forward SSH agent socket |
+| `podman` | bool | `false` | Share the host rootless podman socket (grants host-level container access) |
 | `home` | string | `""` | Override home dir (empty = instance `home/`) |
 | `overlay` | bool | `false` | Enable persistent overlay container |
 | `gpu` | bool | `false` | Auto-detect and pass through GPU devices |
@@ -669,6 +671,8 @@ Conditionally set:
 | `WAYLAND_DISPLAY` | `wayland = true` |
 | `XDG_RUNTIME_DIR` | `wayland = true` |
 | `SSH_AUTH_SOCK` | `ssh = true` |
+| `CONTAINER_HOST` | `podman = true` (socket present) |
+| `DOCKER_HOST` | `podman = true` (socket present) |
 
 Plus any variables from `.env` and the `env` config list.
 
@@ -680,7 +684,8 @@ Install with GUI dependencies:
 
 ```bash
 uv tool install --editable ".[gui]"
-scratch-monkey gui
+scratch-monkey --gui
+scratch-monkey --instances-dir /path/to/dir --gui   # custom instances directory
 ```
 
 The GUI provides a graphical interface to all instance management features.
@@ -759,6 +764,7 @@ scratch-monkey [--instances-dir DIR] [--base-image IMAGE] COMMAND
 |--------|---------|-------------|
 | `--instances-dir` | `~/scratch-monkey` | Where instances are stored |
 | `--base-image` | `scratch_monkey` | Default base image for new instances |
+| `--gui` | off | Launch the graphical interface instead of a command (requires `[gui]` extra) |
 
 ### Commands
 
@@ -774,7 +780,7 @@ scratch-monkey [--instances-dir DIR] [--base-image IMAGE] COMMAND
 | `build [--fedora] [--yes]` | Build a base image |
 | `build-instance <name>` | Build instance Dockerfile (auto-builds base) |
 | `enter <name> [--root]` | Interactive shell |
-| `run <name> [--root] [--wayland] [--ssh] [--cmd CMD]` | Run with overrides |
+| `run <name> [--root] [--wayland] [--ssh] [--podman] [--cmd CMD]` | Run with overrides |
 | `start <name>` | Start overlay container (creates if needed, enables overlay mode) |
 | `stop <name>` | Stop overlay container |
 | `reset <name> [--yes]` | Remove overlay container |
@@ -785,4 +791,3 @@ scratch-monkey [--instances-dir DIR] [--base-image IMAGE] COMMAND
 | `share add <vol> <instance>` | Add volume to instance |
 | `share remove <vol> <instance>` | Remove volume from instance |
 | `share list` | List volumes and which instances use them |
-| `gui` | Launch graphical interface |

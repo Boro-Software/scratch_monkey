@@ -18,7 +18,6 @@ dev = ["pytest", "pytest-mock", "ruff"]
 
 [project.scripts]
 scratch-monkey     = "scratch_monkey.cli.main:cli"
-scratch-monkey-gui = "scratch_monkey.gui.main:gui_cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/scratch_monkey"]

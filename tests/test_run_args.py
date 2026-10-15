@@ -11,6 +11,17 @@ _real_isdir = os.path.isdir
 _real_exists = os.path.exists
 _real_expanduser = os.path.expanduser
 
+def _flag_values(args: list[str], flag: str) -> list[str]:
+    return [args[i + 1] for i in range(len(args) - 1) if args[i] == flag]
+
+
+def _mount_destinations(args: list[str]) -> list[str]:
+    """Container destinations of every -v (src:dest[:opts]) and --tmpfs (dest[:opts]) arg."""
+    dests = [spec.split(":")[1] for spec in _flag_values(args, "-v")]
+    dests += [spec.split(":")[0] for spec in _flag_values(args, "--tmpfs")]
+    return dests
+
+
 # ─── gpu_devices ─────────────────────────────────────────────────────────────
 
 
@@ -350,6 +361,56 @@ class TestBuildRunArgsFeatures:
             args, warnings = build_run_args(scratch_instance)
         assert any("SSH" in w for w in warnings)
 
+    def test_podman_socket_mounted_when_present(self, scratch_instance):
+        scratch_instance.config.podman = True
+        sock = "/run/user/4242/podman/podman.sock"
+        with (
+            patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}),
+            patch("os.path.exists", side_effect=lambda p: p == sock or _real_exists(p)),
+        ):
+            args, warnings = build_run_args(scratch_instance)
+        assert f"{sock}:{sock}" in args
+        assert f"CONTAINER_HOST=unix://{sock}" in args
+        assert f"DOCKER_HOST=unix://{sock}" in args
+        assert not any("odman" in w for w in warnings)
+
+    def test_podman_socket_mounted_when_present_root(self, scratch_instance):
+        scratch_instance.config.podman = True
+        sock = "/run/user/4242/podman/podman.sock"
+        with (
+            patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}),
+            patch("os.path.exists", side_effect=lambda p: p == sock or _real_exists(p)),
+        ):
+            args, _warnings = build_run_args(scratch_instance, root=True)
+        assert f"{sock}:{sock}" in args
+        assert "--userns=keep-id" not in args
+
+    def test_podman_socket_falls_back_to_uid_path(self, scratch_instance):
+        scratch_instance.config.podman = True
+        sock = f"/run/user/{os.getuid()}/podman/podman.sock"
+        env = {k: v for k, v in os.environ.items() if k != "XDG_RUNTIME_DIR"}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("os.path.exists", side_effect=lambda p: p == sock or _real_exists(p)),
+        ):
+            args, _warnings = build_run_args(scratch_instance)
+        assert f"{sock}:{sock}" in args
+
+    def test_podman_warning_when_socket_missing(self, scratch_instance):
+        scratch_instance.config.podman = True
+        with patch("os.path.exists", side_effect=lambda p: False if "podman.sock" in str(p) else _real_exists(p)):
+            args, warnings = build_run_args(scratch_instance)
+        assert any("systemctl --user enable --now podman.socket" in w for w in warnings)
+        assert not any("podman.sock" in a for a in args)
+        assert not any(a.startswith(("CONTAINER_HOST=", "DOCKER_HOST=")) for a in args)
+
+    def test_podman_disabled_adds_nothing(self, scratch_instance):
+        assert scratch_instance.config.podman is False
+        args, warnings = build_run_args(scratch_instance)
+        assert not any("podman.sock" in a for a in args)
+        assert not any(a.startswith(("CONTAINER_HOST=", "DOCKER_HOST=")) for a in args)
+        assert not any("odman" in w for w in warnings)
+
     def test_scratch_instance_has_host_mounts(self, scratch_instance):
         args, _warnings = build_run_args(scratch_instance)
         assert "/usr:/usr:ro" in args
@@ -362,6 +423,36 @@ class TestBuildRunArgsFeatures:
         tmpfs_targets = [args[i + 1] for i in range(len(args)) if args[i] == "--tmpfs" and i + 1 < len(args)]
         assert "/tmp:rw,nosuid,nodev,mode=1777" in tmpfs_targets
         assert "/root:rw,nosuid,nodev,mode=1777" in tmpfs_targets
+
+    def test_scratch_root_has_single_root_mount(self, scratch_instance):
+        """root=True: /root is only the home bind mount, no /root tmpfs."""
+        args, _warnings = build_run_args(scratch_instance, root=True)
+        dests = _mount_destinations(args)
+        assert dests.count("/root") == 1
+        assert f"{scratch_instance.home_dir}:/root" in args
+        tmpfs_dests = [d.split(":")[0] for d in _flag_values(args, "--tmpfs")]
+        assert "/root" not in tmpfs_dests
+        assert "/tmp" in tmpfs_dests
+
+    def test_scratch_non_root_keeps_root_tmpfs(self, scratch_instance):
+        args, _warnings = build_run_args(scratch_instance, root=False)
+        tmpfs_dests = [d.split(":")[0] for d in _flag_values(args, "--tmpfs")]
+        assert "/root" in tmpfs_dests
+        assert "/tmp" in tmpfs_dests
+
+    def test_fedora_root_unchanged(self, fedora_instance):
+        args, _warnings = build_run_args(fedora_instance, root=True)
+        assert f"{fedora_instance.home_dir}:/root" in args
+        assert "--tmpfs" not in args
+        assert _mount_destinations(args).count("/root") == 1
+
+    def test_no_duplicate_mount_destinations(self, scratch_instance, fedora_instance):
+        """Podman rejects duplicate destinations across -v and --tmpfs."""
+        for inst in (scratch_instance, fedora_instance):
+            for root in (False, True):
+                args, _warnings = build_run_args(inst, root=root)
+                dests = _mount_destinations(args)
+                assert len(dests) == len(set(dests)), (inst.name, root, dests)
 
     def test_fedora_instance_no_tmpfs(self, fedora_instance):
         """Fedora instances do not get tmpfs mounts (they have their own)."""

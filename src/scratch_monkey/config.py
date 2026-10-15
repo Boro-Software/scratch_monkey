@@ -59,6 +59,7 @@ class InstanceConfig:
     wayland: bool = False
     x11: bool = False
     ssh: bool = False
+    podman: bool = False
     home: str = ""
     volumes: list[str] = field(default_factory=list)
     env: list[str] = field(default_factory=list)
@@ -99,6 +100,7 @@ def load(path: Path) -> InstanceConfig:
         wayland=_bool(data.get("wayland", False)),
         x11=_bool(data.get("x11", False)),
         ssh=_bool(data.get("ssh", False)),
+        podman=_bool(data.get("podman", False)),
         home=str(data.get("home", "")),
         volumes=_strlist(data.get("volumes", [])),
         env=_strlist(data.get("env", [])),
@@ -169,6 +171,7 @@ def _serialize(config: InstanceConfig) -> str:
     lines.append(f"wayland = {str(config.wayland).lower()}\n")
     lines.append(f"x11 = {str(config.x11).lower()}\n")
     lines.append(f"ssh = {str(config.ssh).lower()}\n")
+    lines.append(f"podman = {str(config.podman).lower()}\n")
 
     if config.home:
         lines.append(f"home = {_toml_str(config.home)}\n")

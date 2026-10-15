@@ -178,6 +178,26 @@ class TestEnsureRunning:
         assert sudoers_called
 
 
+    def test_fedora_podman_installs_clients(self, fedora_instance, mock_runner):
+        mock_runner.container_exists.return_value = False
+        mock_runner.exec_capture.return_value = ""
+        fedora_instance.config.podman = True
+        ensure_running(fedora_instance, mock_runner, "scratch_monkey_fedora")
+        assert any("podman-compose" in str(c) for c in mock_runner.exec_capture.call_args_list)
+
+    def test_fedora_podman_off_skips_install(self, fedora_instance, mock_runner):
+        mock_runner.container_exists.return_value = False
+        mock_runner.exec_capture.return_value = ""
+        ensure_running(fedora_instance, mock_runner, "scratch_monkey_fedora")
+        assert not any("podman-compose" in str(c) for c in mock_runner.exec_capture.call_args_list)
+
+    def test_scratch_podman_never_installs(self, scratch_instance, mock_runner):
+        mock_runner.container_exists.return_value = False
+        scratch_instance.config.podman = True
+        ensure_running(scratch_instance, mock_runner, "scratch_monkey")
+        mock_runner.exec_capture.assert_not_called()
+
+
 # ─── _setup_fedora_user ───────────────────────────────────────────────────────
 
 
@@ -250,6 +270,54 @@ class TestSetupFedoraUser:
         with patch.dict(os.environ, {"USER": "testuser"}):
             _setup_fedora_user("mycontainer", mock_runner, sudo=False)
         assert len(mock_runner.exec_capture.call_args_list) == 1
+
+
+class TestSetupFedoraPodman:
+    def test_installs_when_enabled(self, mock_runner):
+        mock_runner.exec_capture.return_value = ""
+        with patch.dict(os.environ, {"USER": "testuser"}):
+            _setup_fedora_user("c", mock_runner, podman=True)
+        installs = [c for c in mock_runner.exec_capture.call_args_list if "podman-compose" in str(c)]
+        assert len(installs) == 1
+        assert installs[0].kwargs.get("user") == "root"
+        assert "rpm -q podman podman-compose" in installs[0][0][1][-1]
+        assert "dnf install -y podman podman-compose" in installs[0][0][1][-1]
+
+    def test_install_notice_printed_when_enabled(self, mock_runner, capsys):
+        mock_runner.exec_capture.return_value = ""
+        with patch.dict(os.environ, {"USER": "testuser"}):
+            _setup_fedora_user("c", mock_runner, podman=True)
+        assert "Installing podman client tooling in the container" in capsys.readouterr().err
+
+    def test_not_installed_by_default(self, mock_runner, capsys):
+        mock_runner.exec_capture.return_value = ""
+        with patch.dict(os.environ, {"USER": "testuser"}):
+            _setup_fedora_user("c", mock_runner)
+        assert not any("podman-compose" in str(c) for c in mock_runner.exec_capture.call_args_list)
+        assert "Installing podman client tooling" not in capsys.readouterr().err
+
+    def test_install_failure_warns_and_continues(self, mock_runner, capsys):
+        def fake(container, args, **kw):
+            if "podman-compose" in str(args):
+                raise PodmanError("dnf failed")
+            return ""
+
+        mock_runner.exec_capture.side_effect = fake
+        with patch.dict(os.environ, {"USER": "testuser"}):
+            _setup_fedora_user("c", mock_runner, podman=True)  # must not raise
+        assert "Warning" in capsys.readouterr().err
+        # useradd and sudoers still ran after the failed install
+        all_calls = str(mock_runner.exec_capture.call_args_list)
+        assert "useradd" in all_calls
+        assert "sudoers" in all_calls
+
+    def test_podman_without_sudo(self, mock_runner):
+        mock_runner.exec_capture.return_value = ""
+        with patch.dict(os.environ, {"USER": "testuser"}):
+            _setup_fedora_user("c", mock_runner, sudo=False, podman=True)
+        calls = [str(c) for c in mock_runner.exec_capture.call_args_list]
+        assert any("podman-compose" in c for c in calls)
+        assert not any("sudoers" in c for c in calls)
 
 
 # ─── exec_shell ───────────────────────────────────────────────────────────────

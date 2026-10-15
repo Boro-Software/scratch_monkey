@@ -19,6 +19,16 @@ FEDORA_IMAGE = "scratch_monkey_fedora"
 PROJECT_DIR = Path(__file__).parent.parent.parent
 
 
+def podman_socket_path() -> str:
+    """Return the host's rootless podman API socket path.
+
+    Prefers ``$XDG_RUNTIME_DIR/podman/podman.sock``; falls back to
+    ``/run/user/<uid>/podman/podman.sock``.
+    """
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "") or f"/run/user/{os.getuid()}"
+    return f"{runtime_dir}/podman/podman.sock"
+
+
 def short_hostname() -> str:
     """Return the short (non-FQDN) hostname."""
     return socket.gethostname().split(".")[0]
@@ -104,8 +114,11 @@ def build_run_args(
             "-v", "/var/opt:/var/opt:ro",
             "-v", "/var/usrlocal:/usr/local:ro",
             "--tmpfs", "/tmp:rw,nosuid,nodev,mode=1777",
-            "--tmpfs", "/root:rw,nosuid,nodev,mode=1777",
         ]
+        # In root mode the home bind mount already provides /root; a second
+        # mount there makes podman fail with "duplicate mount destination".
+        if not root:
+            args += ["--tmpfs", "/root:rw,nosuid,nodev,mode=1777"]
 
     # Wayland
     if cfg.wayland:
@@ -146,6 +159,24 @@ def build_run_args(
             ]
         else:
             warnings.append("SSH_AUTH_SOCK not set or socket missing, skipping.")
+
+    # Podman socket passthrough (opt-in; grants host-level container access).
+    # The socket is 0600 and owned by the host user.  Rootless --userns=keep-id
+    # maps that user to itself, and root=True (no keep-id) maps container root
+    # to the host user, so the socket is reachable either way.
+    if cfg.podman:
+        podman_sock = podman_socket_path()
+        if os.path.exists(podman_sock):
+            args += [
+                "-v", f"{podman_sock}:{podman_sock}",
+                "-e", f"CONTAINER_HOST=unix://{podman_sock}",
+                "-e", f"DOCKER_HOST=unix://{podman_sock}",
+            ]
+        else:
+            warnings.append(
+                f"Podman socket not found at {podman_sock}, skipping. "
+                "Enable it on the host with: systemctl --user enable --now podman.socket"
+            )
 
     # .env file
     env_file = instance.directory / ".env"
