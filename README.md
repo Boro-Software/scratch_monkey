@@ -249,7 +249,7 @@ The GUI provides:
 - Environment variable, device, and shared volume management
 - Action buttons (enter, enter as root, build, refresh overlay, reset overlay, export cmd, edit files)
 - Live status polling with in-place overlay/image status updates
-- While an operation (start/stop/refresh/reset overlay, etc.) is running, the instance list and detail panels are disabled and a progress indicator shows in the status bar; failures appear both in the status bar and in a red banner at the top of the window
+- While an operation (start/stop/refresh/reset overlay, etc.) is running, the instance list and detail panels are disabled and a progress indicator shows in the status bar; failures appear both in the status bar and in a red banner at the top of the window; rename, clone, create-instance and create-shared-volume dialogs show "Working..." and lock themselves until the background operation finishes, and report errors inline
 
 ---
 
