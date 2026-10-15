@@ -680,7 +680,8 @@ Install with GUI dependencies:
 
 ```bash
 uv tool install --editable ".[gui]"
-scratch-monkey gui
+scratch-monkey --gui
+scratch-monkey --instances-dir /path/to/dir --gui   # custom instances directory
 ```
 
 The GUI provides a graphical interface to all instance management features.
@@ -759,6 +760,7 @@ scratch-monkey [--instances-dir DIR] [--base-image IMAGE] COMMAND
 |--------|---------|-------------|
 | `--instances-dir` | `~/scratch-monkey` | Where instances are stored |
 | `--base-image` | `scratch_monkey` | Default base image for new instances |
+| `--gui` | off | Launch the graphical interface instead of a command (requires `[gui]` extra) |
 
 ### Commands
 
@@ -785,4 +787,3 @@ scratch-monkey [--instances-dir DIR] [--base-image IMAGE] COMMAND
 | `share add <vol> <instance>` | Add volume to instance |
 | `share remove <vol> <instance>` | Remove volume from instance |
 | `share list` | List volumes and which instances use them |
-| `gui` | Launch graphical interface |
