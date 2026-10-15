@@ -133,10 +133,36 @@ and reintroduces 12+ near-duplicate bindings for no behavioral gain. If a *new* 
 is added outside the Splitter (e.g. a ToolBar Action), it needs its own
 `enabled << not app_model.busy` binding, same as the existing ToolBar actions.
 
+## Controller layout: where actions live
+
+`AppModel` (`gui/models/app.py`) holds the shared GUI state (`instances`, `selected_instance`,
+`status_message`, `error_message`, `busy`, ...) and the async machinery. Actions live on
+plain-Python controller objects in `gui/controllers/` that `AppModel` creates and exposes as
+members; views call them as `app_model.<controller>.<action>(...)`:
+
+| Member | Class | Actions |
+|---|---|---|
+| `app_model.instance_actions` | `InstanceController` | `create`, `clone`, `rename`, `delete` |
+| `app_model.overlays` | `OverlayController` | `start`, `stop`, `build`, `enter`, `reset`, `refresh` |
+| `app_model.shared` | `SharedVolumeController` | `create` |
+| `app_model.tools` | `ToolsController` | `export_command`, `edit_file`, `edit_config`, `open_directory`, `open_terminal` |
+
+(`app_model.instances` is the observable list of `InstanceModel`, hence `instance_actions`.)
+
+A **new action** goes on the controller whose domain it belongs to (or a new controller wired up
+in `AppModel.__init__` and exported from `gui/controllers/__init__.py`); do not add actions to
+`AppModel` itself. Controllers hold a reference to the `AppModel` and use only its small
+controller API: the public state members, `runner`, `run_async`, `run_then_reload`, `defer`,
+`reload_when_idle` and `poll_status`. They never create worker threads for podman work, never
+import `deferred_call` (use `app.defer(fn)`), and never touch underscore-private AppModel
+members. Tests patch `scratch_monkey.gui.models.app.deferred_call` as the single point for
+running completion handlers synchronously, and patch controller dependencies where the
+controller looks them up (e.g. `scratch_monkey.gui.controllers.overlays.overlay_ensure_running`).
+
 ## Threading convention: podman work and list reloads never run on the GUI thread
 
-Any `AppModel` method that touches podman or reloads the instance list must go through
-`_run_async` (directly, or via `_run_then_reload` for "do X, then reload the list"). That
+Any controller action that touches podman or reloads the instance list must go through
+`app.run_async` (directly, or via `app.run_then_reload` for "do X, then reload the list"). That
 gives the action the busy flag, the status-bar `ProgressBar`, and the error handling for
 free. Never call `list_all`, `list_shared` or a `PodmanRunner` method from the GUI thread
 (there is deliberately no blocking `refresh()`; use `refresh_async()`).
@@ -160,7 +186,7 @@ enamldef MyDialog(Dialog): dlg:
             PushButton:
                 clicked ::
                     start_working(dlg)    # clears _error_msg, sets working
-                    dlg.app_model.some_action(arg, make_on_done(dlg))
+                    dlg.app_model.some_controller.some_action(arg, make_on_done(dlg))
 ```
 `some_action(..., on_done)` calls `on_done('')` on the GUI thread on success (the helper
 closes the dialog) or `on_done(message)` on failure (shown in `_error_msg`, dialog

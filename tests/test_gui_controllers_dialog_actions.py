@@ -66,7 +66,7 @@ _DIALOG_CASES = {
 
 @pytest.mark.parametrize("case_id", list(_DIALOG_CASES))
 class TestDialogActions:
-    """rename/clone/create/create_shared_volume: on_done callbacks via _run_async."""
+    """rename/clone/create/create: on_done callbacks via run_async."""
 
     def _app(self, tmp_path, case):
         from unittest.mock import patch

@@ -239,7 +239,7 @@ class TestInstanceDelete:
     """Tests for InstanceController.delete()."""
 
     def test_delete_instance_async(self, tmp_path):
-        """delete_instance uses _run_async (sets busy, calls delete, refreshes)."""
+        """delete uses run_async (sets busy, calls delete, refreshes)."""
         import threading
         from unittest.mock import patch
 
@@ -262,7 +262,7 @@ class TestInstanceDelete:
         assert "Deleted" in app.status_message
 
     def test_delete_instance_error_preserves_message(self, tmp_path):
-        """delete_instance on_error shows the error message (not overwritten by refresh)."""
+        """delete on_error shows the error message (not overwritten by refresh)."""
         import threading
         from unittest.mock import patch
 

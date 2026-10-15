@@ -18,8 +18,8 @@ from .gui_helpers import (  # noqa: E402
 class TestOverlayActions:
     """Tests for OverlayController start/stop/reset/refresh."""
 
-    def test_reset_overlay_async(self, tmp_path):
-        """reset_overlay updates overlay_running in-place (no full refresh)."""
+    def test_reset_async(self, tmp_path):
+        """reset updates overlay_running in-place (no full refresh)."""
         import threading
         from unittest.mock import patch
 
@@ -48,8 +48,8 @@ class TestOverlayActions:
         assert app.instances is instances_before
         assert inst.overlay_running is False
 
-    def test_stop_instance(self, tmp_path):
-        """stop_instance stops the overlay container and clears overlay_running."""
+    def test_stop(self, tmp_path):
+        """stop stops the overlay container and clears overlay_running."""
         import threading
         from unittest.mock import patch
 
@@ -73,16 +73,16 @@ class TestOverlayActions:
         assert app.instances is instances_before
         assert inst.overlay_running is False
 
-    def test_stop_instance_not_found(self, tmp_path):
-        """stop_instance sets error status for nonexistent instance."""
+    def test_stop_not_found(self, tmp_path):
+        """stop sets error status for nonexistent instance."""
         app, _, _ = make_app(tmp_path)
 
         app.overlays.stop("nonexistent")
         assert app.busy is False
         assert "not found" in app.status_message
 
-    def test_start_instance(self, tmp_path):
-        """start_instance calls ensure_running and sets overlay_running."""
+    def test_start(self, tmp_path):
+        """start calls ensure_running and sets overlay_running."""
         import threading
         from unittest.mock import patch
 
@@ -155,24 +155,24 @@ class TestOverlayActions:
         assert app.status_message == expected
         assert seen_at_poll == [expected]
 
-    def test_start_instance_not_found(self, tmp_path):
-        """start_instance sets error status for nonexistent instance."""
+    def test_start_not_found(self, tmp_path):
+        """start sets error status for nonexistent instance."""
         app, _, _ = make_app(tmp_path)
 
         app.overlays.start("nonexistent")
         assert app.busy is False
         assert "not found" in app.status_message
 
-    def test_reset_overlay_not_found(self, tmp_path):
-        """reset_overlay returns early without setting busy for nonexistent instance."""
+    def test_reset_not_found(self, tmp_path):
+        """reset returns early without setting busy for nonexistent instance."""
         app, _, project_dir = make_app(tmp_path)
 
         app.overlays.reset("nonexistent")
         assert app.busy is False
         assert "not found" in app.status_message
 
-    def test_reset_overlay_no_container(self, tmp_path):
-        """reset_overlay reports when no overlay container exists."""
+    def test_reset_no_container(self, tmp_path):
+        """reset reports when no overlay container exists."""
         import threading
         from unittest.mock import patch
 
@@ -193,8 +193,8 @@ class TestOverlayActions:
         assert app.busy is False
         assert "No overlay container found" in app.status_message
 
-    def test_reset_overlay_error_preserves_message(self, tmp_path):
-        """reset_overlay on_error calls poll_status (not refresh) and preserves error message."""
+    def test_reset_error_preserves_message(self, tmp_path):
+        """reset on_error calls poll_status (not refresh) and preserves error message."""
         import threading
         from unittest.mock import patch
 
@@ -224,8 +224,8 @@ class TestOverlayActions:
         # Verify instances list was not replaced (poll_status, not refresh)
         assert app.instances is instances_before
 
-    def test_refresh_overlay_success_uses_instance_image(self, tmp_path):
-        """refresh_overlay calls overlay.refresh with the instance tag when it exists."""
+    def test_refresh_success_uses_instance_image(self, tmp_path):
+        """refresh calls overlay.refresh with the instance tag when it exists."""
         import threading
         from unittest.mock import patch
 
@@ -262,8 +262,8 @@ class TestOverlayActions:
         assert app.instances is instances_before
         assert inst.overlay_running is True
 
-    def test_refresh_overlay_uses_base_image_when_not_built(self, tmp_path):
-        """refresh_overlay falls back to the detected/default base image when no instance tag exists."""
+    def test_refresh_uses_base_image_when_not_built(self, tmp_path):
+        """refresh falls back to the detected/default base image when no instance tag exists."""
         import threading
         from unittest.mock import patch
 
@@ -288,16 +288,16 @@ class TestOverlayActions:
         call_args = mock_refresh.call_args
         assert call_args[0][2] == DEFAULT_BASE_IMAGE
 
-    def test_refresh_overlay_not_found(self, tmp_path):
-        """refresh_overlay sets an error status for a nonexistent instance without going busy."""
+    def test_refresh_not_found(self, tmp_path):
+        """refresh sets an error status for a nonexistent instance without going busy."""
         app, _, _ = make_app(tmp_path)
 
         app.overlays.refresh("nonexistent")
         assert app.busy is False
         assert "not found" in app.status_message
 
-    def test_refresh_overlay_error_preserves_message(self, tmp_path):
-        """refresh_overlay on_error calls poll_status (not refresh) and preserves the error."""
+    def test_refresh_error_preserves_message(self, tmp_path):
+        """refresh on_error calls poll_status (not refresh) and preserves the error."""
         import threading
         from unittest.mock import patch
 

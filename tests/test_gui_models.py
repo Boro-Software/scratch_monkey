@@ -579,10 +579,10 @@ class TestInstanceModelDirty:
 
 
 class TestRunAsync:
-    """Tests for AppModel._run_async background task helper."""
+    """Tests for AppModel.run_async background task helper."""
 
     def test_run_async_sets_busy_and_calls_on_success(self, tmp_path):
-        """_run_async sets busy=True, runs work, then calls on_success with result."""
+        """run_async sets busy=True, runs work, then calls on_success with result."""
         import threading
         from unittest.mock import patch
 
@@ -607,7 +607,7 @@ class TestRunAsync:
         assert app.busy is False
 
     def test_run_async_calls_on_error(self, tmp_path):
-        """_run_async calls on_error when work() raises."""
+        """run_async calls on_error when work() raises."""
         import threading
         from unittest.mock import patch
 
@@ -631,7 +631,7 @@ class TestRunAsync:
         assert app.busy is False
 
     def test_run_async_default_error_sets_status(self, tmp_path):
-        """Without on_error, _run_async sets status_message to error string."""
+        """Without on_error, run_async sets status_message to error string."""
         import threading
 
         app, _, project_dir = make_app(tmp_path)
@@ -648,7 +648,7 @@ class TestRunAsync:
         assert app.busy is False
 
     def test_run_async_reentrant_guard(self, tmp_path):
-        """_run_async returns immediately if already busy."""
+        """run_async returns immediately if already busy."""
         app, _, project_dir = make_app(tmp_path)
         app.busy = True
 
@@ -657,7 +657,7 @@ class TestRunAsync:
         assert called == []
 
     def test_run_async_busy_sets_status_and_skips_work(self, tmp_path):
-        """A second _run_async call while busy sets a busy status message
+        """A second run_async call while busy sets a busy status message
         (naming the in-flight operation) and does NOT invoke the new work()."""
         import threading
 
@@ -714,7 +714,7 @@ class TestRunAsync:
         assert app.error_message == ""
 
     def test_run_async_sets_error_message_on_failure(self, tmp_path):
-        """_run_async sets error_message (in addition to status_message) when
+        """run_async sets error_message (in addition to status_message) when
         work() raises, even when a tailored on_error callback is provided."""
         import threading
 
@@ -736,7 +736,7 @@ class TestRunAsync:
 
 
     def test_refresh_async(self, tmp_path):
-        """refresh_async uses _run_async to reload instances."""
+        """refresh_async uses run_async to reload instances."""
         import threading
 
         app, instances_dir, project_dir = make_app(tmp_path)
@@ -751,7 +751,7 @@ class TestRunAsync:
         assert "Loaded" in app.status_message
 
     def test_run_async_sets_status_message_immediately(self, tmp_path):
-        """_run_async sets status_message to the status param before the thread runs."""
+        """run_async sets status_message to the status param before the thread runs."""
         import threading
         from unittest.mock import patch
 
@@ -770,7 +770,7 @@ class TestRunAsync:
         assert observed_status == ["Processing..."]
 
     def test_run_async_busy_true_during_work(self, tmp_path):
-        """_run_async keeps busy=True while work() is running."""
+        """run_async keeps busy=True while work() is running."""
         import threading
         from unittest.mock import patch
 

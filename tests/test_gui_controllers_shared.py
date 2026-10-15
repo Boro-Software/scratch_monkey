@@ -13,7 +13,7 @@ from .gui_helpers import (  # noqa: E402
 class TestSharedVolumeCreate:
     """Tests for SharedVolumeController.create()."""
 
-    def test_create_shared_volume_success(self, tmp_path):
+    def test_create_success(self, tmp_path):
         from unittest.mock import patch
 
         app, instances_dir, project_dir = make_app(tmp_path)
@@ -25,7 +25,7 @@ class TestSharedVolumeCreate:
         assert (instances_dir / ".shared" / "mydata").is_dir()
         assert "mydata" in app.available_shared
 
-    def test_create_shared_volume_duplicate(self, tmp_path):
+    def test_create_duplicate(self, tmp_path):
         from unittest.mock import patch
 
         app, instances_dir, project_dir = make_app(tmp_path)
@@ -36,7 +36,7 @@ class TestSharedVolumeCreate:
 
         assert result != ""
 
-    def test_create_shared_volume_invalid_name(self, tmp_path):
+    def test_create_invalid_name(self, tmp_path):
         from unittest.mock import patch
 
         app, instances_dir, project_dir = make_app(tmp_path)
