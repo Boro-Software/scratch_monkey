@@ -5,6 +5,11 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 
+# Seconds to wait for fast read-only queries (inspect/exists). A stuck container
+# lock makes these block forever, so they must time out rather than hang the
+# CLI or GUI.
+QUERY_TIMEOUT: float = 15
+
 
 class PodmanError(Exception):
     """Raised when a podman command fails."""
@@ -19,7 +24,8 @@ class PodmanError(Exception):
 class PodmanRunner:
     """Thin wrapper around podman subprocess calls.
 
-    All methods raise PodmanError on non-zero exit codes.
+    All methods raise PodmanError on non-zero exit codes. Read-only queries
+    also raise PodmanError if podman does not answer within QUERY_TIMEOUT.
     Business logic lives elsewhere; this class is fully mockable.
     """
 
@@ -35,14 +41,25 @@ class PodmanRunner:
         check: bool = True,
         capture: bool = True,
         input: str | None = None,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         cmd = [self.podman_bin, *self.extra_args, *args]
-        result = subprocess.run(
-            cmd,
-            capture_output=capture,
-            text=True,
-            input=input,
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=capture,
+                text=True,
+                input=input,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            target = " ".join(args)
+            raise PodmanError(
+                f"podman {target!r} timed out: podman did not respond within "
+                f"{timeout:g}s; a container lock may be stuck. Check with "
+                "`podman ps -a`; if it also hangs, quit any long-running podman "
+                "clients (e.g. Podman Desktop) or run `podman system renumber` / reboot.",
+            ) from exc
         if check and result.returncode != 0:
             stderr = result.stderr or ""
             raise PodmanError(
@@ -56,14 +73,14 @@ class PodmanRunner:
 
     def image_exists(self, image: str) -> bool:
         """Return True if the named image exists locally."""
-        result = self._run(["image", "exists", image], check=False)
+        result = self._run(["image", "exists", image], check=False, timeout=QUERY_TIMEOUT)
         return result.returncode == 0
 
     # ── container queries ─────────────────────────────────────────────────────
 
     def container_exists(self, name: str) -> bool:
         """Return True if a container with this name exists (any state)."""
-        result = self._run(["container", "exists", name], check=False)
+        result = self._run(["container", "exists", name], check=False, timeout=QUERY_TIMEOUT)
         return result.returncode == 0
 
     def container_running(self, name: str) -> bool:
@@ -71,7 +88,9 @@ class PodmanRunner:
         if not self.container_exists(name):
             return False
         result = self._run(
-            ["inspect", name, "--format", "{{.State.Running}}"], check=False
+            ["inspect", name, "--format", "{{.State.Running}}"],
+            check=False,
+            timeout=QUERY_TIMEOUT,
         )
         return result.returncode == 0 and result.stdout.strip() == "true"
 
@@ -80,7 +99,9 @@ class PodmanRunner:
         if not self.container_exists(name):
             return ""
         result = self._run(
-            ["inspect", name, "--format", "{{.State.Status}}"], check=False
+            ["inspect", name, "--format", "{{.State.Status}}"],
+            check=False,
+            timeout=QUERY_TIMEOUT,
         )
         if result.returncode != 0:
             return ""

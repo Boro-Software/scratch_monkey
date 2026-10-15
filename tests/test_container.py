@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from scratch_monkey.container import PodmanError, PodmanRunner
+from scratch_monkey.container import QUERY_TIMEOUT, PodmanError, PodmanRunner
 
 
 def make_result(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
@@ -269,3 +269,85 @@ class TestPodmanError:
         assert err.returncode == 1
         assert err.stderr == "oops"
         assert "failed" in str(err)
+
+
+class TestTimeouts:
+    def _timeout(self, *a, **kw):
+        raise subprocess.TimeoutExpired(cmd="podman", timeout=QUERY_TIMEOUT)
+
+    def test_run_translates_timeout_to_podman_error(self, runner):
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("podman", 5)):
+            with pytest.raises(PodmanError) as excinfo:
+                runner._run(["inspect", "sm-1234"], timeout=5)
+        msg = str(excinfo.value)
+        assert "sm-1234" in msg
+        assert "5s" in msg
+        assert "podman ps -a" in msg
+        assert "podman system renumber" in msg
+
+    def test_run_passes_timeout_to_subprocess(self, runner):
+        with patch("subprocess.run", return_value=make_result(0)) as mock_run:
+            runner._run(["ps"], timeout=7)
+        assert mock_run.call_args.kwargs["timeout"] == 7
+
+    def test_run_default_has_no_timeout(self, runner):
+        with patch("subprocess.run", return_value=make_result(0)) as mock_run:
+            runner._run(["ps"])
+        assert mock_run.call_args.kwargs["timeout"] is None
+
+    QUERIES = [
+        lambda r: r.image_exists("img"),
+        lambda r: r.container_exists("c"),
+        lambda r: r.container_running("c"),
+        lambda r: r.container_status("c"),
+    ]
+    QUERY_IDS = ["image_exists", "container_exists", "container_running", "container_status"]
+
+    @pytest.mark.parametrize("call", QUERIES, ids=QUERY_IDS)
+    def test_queries_raise_on_timeout_not_false(self, runner, call):
+        with patch("subprocess.run", side_effect=self._timeout):
+            with pytest.raises(PodmanError, match="did not respond"):
+                call(runner)
+
+    def test_container_running_raises_when_inspect_times_out(self, runner):
+        def side_effect(cmd, **kw):
+            if "exists" in cmd:
+                return make_result(0)
+            raise subprocess.TimeoutExpired(cmd, QUERY_TIMEOUT)
+
+        with patch("subprocess.run", side_effect=side_effect):
+            with pytest.raises(PodmanError):
+                runner.container_running("c")
+
+    @pytest.mark.parametrize("call", QUERIES, ids=QUERY_IDS)
+    def test_queries_pass_query_timeout(self, runner, call):
+        with patch("subprocess.run", return_value=make_result(0, stdout="true")) as mock_run:
+            call(runner)
+        assert mock_run.call_count >= 1
+        for c in mock_run.call_args_list:
+            assert c.kwargs["timeout"] == QUERY_TIMEOUT
+
+    LIFECYCLE = [
+        lambda r: r.run_daemon("c", "img", []),
+        lambda r: r.build("t", "."),
+        lambda r: r.stop("c"),
+        lambda r: r.start("c"),
+        lambda r: r.remove("c"),
+        lambda r: r.rmi("img"),
+        lambda r: r.tag("a", "b"),
+        lambda r: r.commit("c", "img"),
+        lambda r: r.run(["img"]),
+        lambda r: r.exec_in("c", ["ls"]),
+        lambda r: r.exec_interactive("c", ["sh"]),
+        lambda r: r.exec_capture("c", ["ls"]),
+    ]
+    LIFECYCLE_IDS = [
+        "run_daemon", "build", "stop", "start", "remove", "rmi", "tag",
+        "commit", "run", "exec_in", "exec_interactive", "exec_capture",
+    ]
+
+    @pytest.mark.parametrize("call", LIFECYCLE, ids=LIFECYCLE_IDS)
+    def test_lifecycle_methods_have_no_timeout(self, runner, call):
+        with patch("subprocess.run", return_value=make_result(0)) as mock_run:
+            call(runner)
+        assert mock_run.call_args.kwargs["timeout"] is None

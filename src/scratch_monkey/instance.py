@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import InstanceConfig, load, save, validate_name
-from .container import PodmanRunner
+from .container import PodmanError, PodmanRunner
 
 
 class InstanceError(Exception):
@@ -201,6 +201,10 @@ class InstanceInfo:
     overlay_running: bool
     config: InstanceConfig
     base_image: str | None = None
+    # Set when podman could not be queried for this instance (e.g. timed out
+    # on a stuck container lock). image_built/overlay_running are then unknown
+    # and reported as False.
+    status_error: str | None = None
 
 
 def list_all(instances_dir: Path, runner: PodmanRunner) -> list[InstanceInfo]:
@@ -217,9 +221,18 @@ def list_all(instances_dir: Path, runner: PodmanRunner) -> list[InstanceInfo]:
             continue  # skip .shared and other hidden dirs
         config_path = entry / "scratch.toml"
         config = load(config_path)
-        image_built = runner.image_exists(entry.name)
+        image_built = False
+        overlay_running = False
+        status_errors: list[str] = []
+        try:
+            image_built = runner.image_exists(entry.name)
+        except PodmanError as e:
+            status_errors.append(str(e))
         overlay_name = config.overlay_id if config.overlay_id else f"{entry.name}-overlay"
-        overlay_running = runner.container_running(overlay_name)
+        try:
+            overlay_running = runner.container_running(overlay_name)
+        except PodmanError as e:
+            status_errors.append(str(e))
         base_image = detect_base_image(entry)
         results.append(
             InstanceInfo(
@@ -229,6 +242,7 @@ def list_all(instances_dir: Path, runner: PodmanRunner) -> list[InstanceInfo]:
                 overlay_running=overlay_running,
                 config=config,
                 base_image=base_image,
+                status_error=status_errors[0] if status_errors else None,
             )
         )
     return results
