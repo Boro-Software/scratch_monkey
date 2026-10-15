@@ -699,6 +699,28 @@ class TestInstanceModelDirty:
         m.cmd = "/bin/zsh"
         assert m.dirty is True
 
+    def test_podman_round_trip(self):
+        m = InstanceModel.from_info(self._make_info(podman=True))
+        assert m.podman is True
+        assert m.to_config().podman is True
+        m2 = InstanceModel.from_info(self._make_info())
+        assert m2.podman is False
+        assert m2.to_config().podman is False
+
+    def test_dirty_after_podman_change(self):
+        m = InstanceModel.from_info(self._make_info())
+        assert m.dirty is False
+        m.podman = True
+        assert m.dirty is True
+        m.podman = False
+        assert m.dirty is False
+
+    def test_revert_restores_podman(self):
+        m = InstanceModel.from_info(self._make_info(podman=True))
+        m.podman = False
+        m.revert()
+        assert m.podman is True
+
     def test_dirty_after_bool_change(self):
         info = self._make_info()
         m = InstanceModel.from_info(info)

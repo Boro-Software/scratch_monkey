@@ -181,6 +181,16 @@ class TestBuildDisplaySetup:
         # Run variant includes volume mount
         assert "-v $SSH_AUTH_SOCK:$SSH_AUTH_SOCK" in result
 
+    def test_podman_enabled(self):
+        result = _build_display_setup(InstanceConfig(podman=True))
+        assert "podman/podman.sock" in result
+        assert "CONTAINER_HOST=unix://$_psock" in result
+        assert "DOCKER_HOST=unix://$_psock" in result
+        assert "-v $_psock:$_psock" in result
+
+    def test_podman_disabled(self):
+        assert "podman.sock" not in _build_display_setup(InstanceConfig())
+
     def test_all_features(self):
         """All features combined produce all forwarding blocks."""
         result = _build_display_setup(InstanceConfig(wayland=True, x11=True, ssh=True))
