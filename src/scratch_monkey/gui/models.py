@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 try:
@@ -21,13 +22,12 @@ try:
 except ImportError:
     def deferred_call(fn): fn()  # fallback for tests without enaml app
 
-from ..config import ConfigError, InstanceConfig, save
+from ..config import InstanceConfig, save
 from ..container import PodmanError, PodmanRunner
 from ..export import ExportError
 from ..export import export_command as export_command_fn
 from ..instance import (
     Instance,
-    InstanceError,
     InstanceInfo,
     clone,
     create,
@@ -43,6 +43,20 @@ from ..overlay import refresh as overlay_refresh
 from ..overlay import reset as overlay_reset
 from ..run_args import DEFAULT_BASE_IMAGE, FEDORA_IMAGE, PROJECT_DIR
 from ..shared import list_shared, parse_shared_entry
+
+
+class _ActionFailed(Exception):
+    """An action failed in a worker; carries a best-effort list reload.
+
+    Raised by AppModel._run_then_reload so the error handler can refresh the
+    instance list (e.g. after a partially-completed delete) without doing any
+    podman work on the GUI thread. str() is the underlying error message.
+    """
+
+    def __init__(self, cause: Exception, snapshot: tuple | None) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.snapshot = snapshot
 
 
 def _find_terminal() -> list[str]:
@@ -293,6 +307,9 @@ class AppModel(Atom):
     # Status text of the operation currently in flight, shown if a second
     # action is clicked while busy (see _run_async).
     _busy_status = Str("")
+    # Completion status of a post-editor config reload that was requested while
+    # busy ("" = none pending); honored as soon as the in-flight operation ends.
+    _reload_pending = Str("")
 
     def __init__(self, instances_dir: Path, runner: PodmanRunner | None = None) -> None:
         super().__init__()
@@ -318,18 +335,28 @@ class AppModel(Atom):
 
     # ── async helper ──────────────────────────────────────────────────────────
 
-    def _run_async(self, status: str, work, on_success=None, on_error=None) -> None:
+    def _busy_message(self) -> str:
+        return f"Busy — please wait ({self._busy_status!r} still running)"
+
+    def _run_async(self, status: str, work, on_success=None, on_error=None) -> bool:
         """Run work() in a background thread with busy indicator.
+
+        Convention: any model method that touches podman or reloads the
+        instance list must go through here, never run on the GUI thread.
 
         Args:
             status: Status message shown while working.
             work: Callable that does the blocking work. Called in a daemon thread.
             on_success: Optional callback(result) called on the GUI thread after work completes.
             on_error: Optional callback(exception) called on the GUI thread if work raises.
+
+        Returns:
+            True if the work was started, False if rejected because the app is
+            already busy (callers with a completion callback must report that).
         """
         if self.busy:
-            self.status_message = f"Busy — please wait ({self._busy_status!r} still running)"
-            return
+            self.status_message = self._busy_message()
+            return False
         self.busy = True
         self._busy_status = status
         self.status_message = status
@@ -347,15 +374,97 @@ class AppModel(Atom):
                         on_error(e)
                     else:
                         self.status_message = f"Error: {e}"
+                    self._run_pending_reload()
                 deferred_call(_on_err)
             else:
                 def _on_ok():
                     self.busy = False
                     if on_success:
                         on_success(result)
+                    self._run_pending_reload()
                 deferred_call(_on_ok)
 
         threading.Thread(target=_thread, daemon=True).start()
+        return True
+
+    def _run_pending_reload(self) -> None:
+        """Start a deferred reload (see edit_config) once the app is idle."""
+        if self._reload_pending and not self.busy:
+            done_status, self._reload_pending = self._reload_pending, ""
+            self.refresh_async("Reloading config...", done_status=done_status)
+
+    def _load_snapshot(self) -> tuple[list[InstanceInfo], list[str]]:
+        """Query the instance list and shared volumes. Blocking: worker threads only."""
+        instances_dir = Path(self.instances_dir)
+        infos = list_all(instances_dir, self._runner)
+        avail = [v.name for v in list_shared(instances_dir)]
+        return infos, avail
+
+    def _apply_snapshot(self, snapshot: tuple[list[InstanceInfo], list[str]]) -> None:
+        infos, avail = snapshot
+        self.available_shared = avail
+        self._set_instances(infos)
+
+    def _run_then_reload(
+        self,
+        status: str,
+        action: Callable[[], object],
+        *,
+        success_status: str,
+        on_done: Callable[[str], None] | None = None,
+        after_reload: Callable[[], None] | None = None,
+        reload_on_error: bool = False,
+    ) -> None:
+        """Run action() then reload the instance list, all in one background job.
+
+        Args:
+            status: Status message shown while working.
+            action: Blocking work (podman/disk). Runs in the worker thread.
+            success_status: Status message set once the list has been reloaded.
+            on_done: Optional completion callback for dialogs, called on the GUI
+                thread with '' on success or the error message. Also called with
+                a busy message if the app is already busy, so a dialog is never
+                left waiting. When given, the error is reported there instead of
+                in the error banner.
+            after_reload: Optional callable run on the GUI thread after the new
+                list is applied (use it to adjust the selection).
+            reload_on_error: Also reload the list (best effort) when action fails,
+                e.g. after a partially-completed delete.
+        """
+        def work():
+            try:
+                action()
+            except Exception as exc:
+                snapshot = None
+                if reload_on_error:
+                    try:
+                        snapshot = self._load_snapshot()
+                    except Exception:
+                        pass
+                raise _ActionFailed(exc, snapshot) from exc
+            return self._load_snapshot()
+
+        def on_success(snapshot):
+            self._apply_snapshot(snapshot)
+            if after_reload:
+                after_reload()
+            self.status_message = success_status
+            if on_done:
+                on_done("")
+
+        def on_error(exc):
+            cause = exc.cause if isinstance(exc, _ActionFailed) else exc
+            if isinstance(exc, _ActionFailed) and exc.snapshot is not None:
+                self._apply_snapshot(exc.snapshot)
+            msg = str(cause) or type(cause).__name__
+            self.status_message = f"Error: {msg}"
+            # A dialog shows the error itself; otherwise use the banner.
+            self.error_message = "" if on_done else msg
+            if on_done:
+                on_done(msg)
+
+        if not self._run_async(status, work, on_success, on_error) and on_done:
+            on_done(self._busy_message())
 
     # ── actions ───────────────────────────────────────────────────────────────
 
@@ -388,39 +497,21 @@ class AppModel(Atom):
             details = "; ".join(f"{m.name} ({m.status_error})" for m in failed)
             self.error_message = f"Could not query podman for: {details}"
 
-    def refresh(self) -> None:
-        """Reload all instances from disk (blocking; prefer refresh_async)."""
-        instances_dir = Path(self.instances_dir)
-        try:
-            infos = list_all(instances_dir, self._runner)
-            self.available_shared = [v.name for v in list_shared(instances_dir)]
-            self._set_instances(infos)
-            self.status_message = f"Loaded {len(self.instances)} instance(s)"
-        except (InstanceError, PodmanError, ConfigError) as e:
-            self.status_message = f"Error loading instances: {e}"
-
-    def refresh_async(self, status: str = "Refreshing...") -> None:
+    def refresh_async(self, status: str = "Refreshing...", done_status: str = "") -> None:
         """Reload all instances from disk in a background thread.
 
         Also used for the initial load after the window opens (with a
         "Loading instances..." status). Failures set error_message via _run_async.
+        done_status overrides the default "Loaded N instance(s)" completion message.
         """
-        def work():
-            instances_dir = Path(self.instances_dir)
-            infos = list_all(instances_dir, self._runner)
-            avail = [v.name for v in list_shared(instances_dir)]
-            return infos, avail
-
-        def on_success(result):
-            infos, avail = result
-            self.available_shared = avail
-            self._set_instances(infos)
-            self.status_message = f"Loaded {len(self.instances)} instance(s)"
+        def on_success(snapshot):
+            self._apply_snapshot(snapshot)
+            self.status_message = done_status or f"Loaded {len(self.instances)} instance(s)"
 
         def on_error(exc):
             self.status_message = f"Error loading instances: {exc}"
 
-        self._run_async(status, work, on_success, on_error)
+        self._run_async(status, self._load_snapshot, on_success, on_error)
 
     def poll_status(self) -> None:
         """Lightweight status poller — updates overlay_running/image_built in-place."""
@@ -510,13 +601,14 @@ class AppModel(Atom):
             self.status_message = f"Instance {name!r} not found"
             return
         inst = Instance.from_directory(inst_dir)
-        # Determine image: per-instance build or base image
-        if self._runner.image_exists(name):
-            image = name
-        else:
-            image = detect_base_image(inst_dir) or DEFAULT_BASE_IMAGE
 
         def work():
+            # Determine image: per-instance build or base image (podman query,
+            # so it must run here in the worker, not on the GUI thread)
+            if self._runner.image_exists(name):
+                image = name
+            else:
+                image = detect_base_image(inst_dir) or DEFAULT_BASE_IMAGE
             overlay_ensure_running(inst, self._runner, image)
 
         def on_success(_result):
@@ -592,13 +684,13 @@ class AppModel(Atom):
             self.status_message = f"Instance {name!r} not found"
             return
         inst = Instance.from_directory(inst_dir)
-        # Determine image: per-instance build or base image (mirrors start_instance)
-        if self._runner.image_exists(name):
-            image = name
-        else:
-            image = detect_base_image(inst_dir) or DEFAULT_BASE_IMAGE
 
         def work():
+            # Determine image: per-instance build or base image (mirrors start_instance)
+            if self._runner.image_exists(name):
+                image = name
+            else:
+                image = detect_base_image(inst_dir) or DEFAULT_BASE_IMAGE
             overlay_refresh(inst, self._runner, image)
 
         def on_success(_result):
@@ -616,48 +708,51 @@ class AppModel(Atom):
 
     def delete_instance(self, name: str) -> None:
         """Delete the named instance (no confirmation — caller must confirm)."""
-        def work():
-            delete(name, Path(self.instances_dir), self._runner)
-            instances_dir = Path(self.instances_dir)
-            infos = list_all(instances_dir, self._runner)
-            avail = [v.name for v in list_shared(instances_dir)]
-            return infos, avail
-
-        def on_success(result):
-            infos, avail = result
-            self.available_shared = avail
-            self._set_instances(infos)
+        def clear_selection():
             self.selected_instance = ""
-            self.status_message = f"Deleted {name!r}"
 
-        def on_error(exc):
-            self.refresh()
-            self.status_message = f"Error: {exc}"
+        self._run_then_reload(
+            f"Deleting {name!r}...",
+            lambda: delete(name, Path(self.instances_dir), self._runner),
+            success_status=f"Deleted {name!r}",
+            after_reload=clear_selection,
+            reload_on_error=True,
+        )
 
-        self._run_async(f"Deleting {name!r}...", work, on_success, on_error)
+    def rename_instance(self, old_name: str, new_name: str, on_done: Callable[[str], None]) -> None:
+        """Rename an instance in the background.
 
-    def rename_instance(self, old_name: str, new_name: str) -> str:
-        """Rename an instance. Returns '' on success or error string."""
-        try:
-            rename(old_name, new_name, Path(self.instances_dir), self._runner)
-            self.status_message = f"Renamed {old_name!r} to {new_name!r}"
+        on_done(err) is called on the GUI thread with '' on success or an
+        error message (including when the app is busy). The selection follows
+        the renamed instance.
+        """
+        def follow_rename():
             if self.selected_instance == old_name:
                 self.selected_instance = new_name
-        except (InstanceError, PodmanError, ConfigError) as e:
-            return str(e)
-        self.refresh()
-        return ""
 
-    def clone_instance(self, source: str, dest: str) -> str:
-        """Clone an instance. Returns '' on success or error string."""
-        try:
-            clone(source, dest, Path(self.instances_dir), self._runner)
-            self.status_message = f"Cloned {source!r} to {dest!r}"
+        self._run_then_reload(
+            f"Renaming {old_name!r}...",
+            lambda: rename(old_name, new_name, Path(self.instances_dir), self._runner),
+            success_status=f"Renamed {old_name!r} to {new_name!r}",
+            on_done=on_done,
+            after_reload=follow_rename,
+        )
+
+    def clone_instance(self, source: str, dest: str, on_done: Callable[[str], None]) -> None:
+        """Clone an instance in the background and select the clone.
+
+        on_done(err): see rename_instance.
+        """
+        def select_clone():
             self.selected_instance = dest
-        except (InstanceError, PodmanError, ConfigError) as e:
-            return str(e)
-        self.refresh()
-        return ""
+
+        self._run_then_reload(
+            f"Cloning {source!r}...",
+            lambda: clone(source, dest, Path(self.instances_dir), self._runner),
+            success_status=f"Cloned {source!r} to {dest!r}",
+            on_done=on_done,
+            after_reload=select_clone,
+        )
 
     def export_command(self, name: str, cmd: str, bin_name: str = "") -> str:
         """Export a command from an instance. Returns '' on success or error string."""
@@ -717,9 +812,13 @@ class AppModel(Atom):
             proc.wait()
 
             def _update():
-                self.refresh()
-                if self.selected_instance == name:
-                    self.status_message = f"Reloaded config for {name!r}"
+                # Reload in the background. If another operation is in flight
+                # the reload is deferred until it finishes (_run_pending_reload).
+                done_status = f"Reloaded config for {name!r}"
+                if self.busy:
+                    self._reload_pending = done_status
+                else:
+                    self.refresh_async("Reloading config...", done_status=done_status)
 
             deferred_call(_update)
 
@@ -731,35 +830,56 @@ class AppModel(Atom):
         self.init_shared_entries(m)
         return m
 
-    def create_shared_volume(self, name: str) -> str:
-        """Create a new shared volume. Returns '' on success or error string."""
-        from ..config import validate_name
-        from ..shared import SharedError, create_shared
+    def create_shared_volume(self, name: str, on_done: Callable[[str], None]) -> None:
+        """Create a new shared volume in the background.
 
-        try:
+        on_done(err): see rename_instance.
+        """
+        from ..config import validate_name
+        from ..shared import create_shared
+
+        def action():
             validate_name(name)
             create_shared(name, Path(self.instances_dir))
-        except (SharedError, ConfigError) as e:
-            return str(e)
-        self.refresh()
-        self.status_message = f"Created shared volume {name!r}"
-        return ""
+
+        self._run_then_reload(
+            f"Creating shared volume {name!r}...",
+            action,
+            success_status=f"Created shared volume {name!r}",
+            on_done=on_done,
+        )
 
     def create_instance(
-        self, name: str, *, fedora: bool = False, skel: bool = False, config: InstanceConfig | None = None
-    ) -> str:
-        """Create a new instance. Returns '' on success or error string on failure."""
+        self,
+        name: str,
+        on_done: Callable[[str], None],
+        *,
+        fedora: bool = False,
+        skel: bool = False,
+        config: InstanceConfig | None = None,
+    ) -> None:
+        """Create a new instance in the background and select it.
+
+        on_done(err): see rename_instance.
+        """
         base_image = FEDORA_IMAGE if fedora else DEFAULT_BASE_IMAGE
-        try:
-            inst = create(name, Path(self.instances_dir), base_image, PROJECT_DIR)
-        except (InstanceError, ConfigError) as e:
-            return str(e)
-        if skel:
-            skel_copy(inst)
-        if config is not None:
-            config_path = inst.directory / "scratch.toml"
-            save(config_path, config)
-        self.refresh()
-        self.selected_instance = name
-        self.status_message = f"Created instance {name!r}"
-        return ""
+        instances_dir = Path(self.instances_dir)
+        project_dir = PROJECT_DIR
+
+        def action():
+            inst = create(name, instances_dir, base_image, project_dir)
+            if skel:
+                skel_copy(inst)
+            if config is not None:
+                save(inst.directory / "scratch.toml", config)
+
+        def select_new():
+            self.selected_instance = name
+
+        self._run_then_reload(
+            f"Creating {name!r}...",
+            action,
+            success_status=f"Created instance {name!r}",
+            on_done=on_done,
+            after_reload=select_new,
+        )
