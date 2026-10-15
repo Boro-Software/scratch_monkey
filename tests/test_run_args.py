@@ -350,6 +350,56 @@ class TestBuildRunArgsFeatures:
             args, warnings = build_run_args(scratch_instance)
         assert any("SSH" in w for w in warnings)
 
+    def test_podman_socket_mounted_when_present(self, scratch_instance):
+        scratch_instance.config.podman = True
+        sock = "/run/user/4242/podman/podman.sock"
+        with (
+            patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}),
+            patch("os.path.exists", side_effect=lambda p: p == sock or _real_exists(p)),
+        ):
+            args, warnings = build_run_args(scratch_instance)
+        assert f"{sock}:{sock}" in args
+        assert f"CONTAINER_HOST=unix://{sock}" in args
+        assert f"DOCKER_HOST=unix://{sock}" in args
+        assert not any("odman" in w for w in warnings)
+
+    def test_podman_socket_mounted_when_present_root(self, scratch_instance):
+        scratch_instance.config.podman = True
+        sock = "/run/user/4242/podman/podman.sock"
+        with (
+            patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}),
+            patch("os.path.exists", side_effect=lambda p: p == sock or _real_exists(p)),
+        ):
+            args, _warnings = build_run_args(scratch_instance, root=True)
+        assert f"{sock}:{sock}" in args
+        assert "--userns=keep-id" not in args
+
+    def test_podman_socket_falls_back_to_uid_path(self, scratch_instance):
+        scratch_instance.config.podman = True
+        sock = f"/run/user/{os.getuid()}/podman/podman.sock"
+        env = {k: v for k, v in os.environ.items() if k != "XDG_RUNTIME_DIR"}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("os.path.exists", side_effect=lambda p: p == sock or _real_exists(p)),
+        ):
+            args, _warnings = build_run_args(scratch_instance)
+        assert f"{sock}:{sock}" in args
+
+    def test_podman_warning_when_socket_missing(self, scratch_instance):
+        scratch_instance.config.podman = True
+        with patch("os.path.exists", side_effect=lambda p: False if "podman.sock" in str(p) else _real_exists(p)):
+            args, warnings = build_run_args(scratch_instance)
+        assert any("systemctl --user enable --now podman.socket" in w for w in warnings)
+        assert not any("podman.sock" in a for a in args)
+        assert not any(a.startswith(("CONTAINER_HOST=", "DOCKER_HOST=")) for a in args)
+
+    def test_podman_disabled_adds_nothing(self, scratch_instance):
+        assert scratch_instance.config.podman is False
+        args, warnings = build_run_args(scratch_instance)
+        assert not any("podman.sock" in a for a in args)
+        assert not any(a.startswith(("CONTAINER_HOST=", "DOCKER_HOST=")) for a in args)
+        assert not any("odman" in w for w in warnings)
+
     def test_scratch_instance_has_host_mounts(self, scratch_instance):
         args, _warnings = build_run_args(scratch_instance)
         assert "/usr:/usr:ro" in args

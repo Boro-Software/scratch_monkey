@@ -189,6 +189,8 @@ def list_cmd(ctx: click.Context) -> None:
             active_parts.append("x11=true")
         if cfg.ssh:
             active_parts.append("ssh=true")
+        if cfg.podman:
+            active_parts.append("podman=true")
         if cfg.gpu:
             active_parts.append("gpu=true")
         if cfg.overlay:
@@ -301,6 +303,12 @@ def build_instance(ctx: click.Context, name: str) -> None:
 @click.option("--root", is_flag=True, default=False, help="Run as root.")
 @click.option("--wayland", is_flag=True, default=False, help="Enable Wayland socket sharing.")
 @click.option("--ssh", is_flag=True, default=False, help="Enable SSH agent sharing.")
+@click.option(
+    "--podman",
+    is_flag=True,
+    default=False,
+    help="Share the host podman socket (grants host-level container access).",
+)
 @click.option("--x11", is_flag=True, default=False, help="Enable X11 display sharing.")
 @click.option("--gpu", is_flag=True, default=False, help="Enable GPU device passthrough.")
 @click.option("--cmd", default="", help="Override the command to run.")
@@ -311,6 +319,7 @@ def run(
     root: bool,
     wayland: bool,
     ssh: bool,
+    podman: bool,
     x11: bool,
     gpu: bool,
     cmd: str,
@@ -326,6 +335,8 @@ def run(
         cfg.wayland = True
     if ssh:
         cfg.ssh = True
+    if podman:
+        cfg.podman = True
     if x11:
         cfg.x11 = True
     if gpu:

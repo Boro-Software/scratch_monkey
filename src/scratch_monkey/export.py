@@ -113,6 +113,17 @@ def _build_display_setup(cfg: InstanceConfig) -> str:
             "fi",
         ]
 
+    if cfg.podman:
+        # Overlay containers already carry the socket mount and env (set at
+        # creation), so only the fresh ``podman run`` path needs them here.
+        lines += [
+            '_psock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"',
+            'if [ -S "$_psock" ]; then',
+            '    _drun="$_drun -v $_psock:$_psock -e CONTAINER_HOST=unix://$_psock'
+            ' -e DOCKER_HOST=unix://$_psock"',
+            "fi",
+        ]
+
     return "\n".join(lines) + "\n"
 
 
