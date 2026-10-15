@@ -146,7 +146,15 @@ enamldef ConfigEditorPanel(Container): editor:
                         submit_triggers = ['lost_focus', 'return_pressed', 'auto_sync']
 
                     ObjectCombo: mode_combo:
-                        items = ["ro", "rw"]
+                        items = ["ro", "rw", "overlay"]
+                        tool_tip = (
+                            "ro: read-only, the container cannot change the host directory.\n"
+                            "rw: read-write, changes go straight to the host directory.\n"
+                            "overlay: the container sees a writable copy; changes are kept "
+                            "per instance (they survive restarts and refresh) and the host "
+                            "directory is never modified. Discard them with "
+                            "'scratch-monkey reset-overlays'."
+                        )
                         selected << (editor.model.volume_entries[loop.item].mode if editor.model and loop.item < len(editor.model.volume_entries) else "ro")
                         selected ::
                             if editor.model and loop.item < len(editor.model.volume_entries):

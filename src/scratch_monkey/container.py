@@ -221,6 +221,22 @@ class PodmanRunner:
         """
         self._run(["unshare", "rmdir", "--", *paths])
 
+    def unshare_rm_rf(self, paths: list[str]) -> None:
+        """Run `podman unshare rm -rf -- <paths>`.
+
+        Inside the user namespace the caller owns files that belong to a subuid
+        on the host (written by container root), so this can delete trees that
+        plain ``rm``/``shutil.rmtree`` cannot.  Destructive: callers must have
+        validated the paths.  As a last line of defence, only absolute paths
+        other than ``/`` are accepted.
+        """
+        if not paths:
+            return
+        for path in paths:
+            if not path.startswith("/") or path.rstrip("/") == "":
+                raise ValueError(f"unshare_rm_rf refuses non-absolute or root path {path!r}")
+        self._run(["unshare", "rm", "-rf", "--", *paths])
+
     def tag(self, source: str, target: str) -> None:
         """Tag an image with a new name."""
         self._run(["tag", source, target])
