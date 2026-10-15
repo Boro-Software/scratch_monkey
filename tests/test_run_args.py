@@ -11,6 +11,17 @@ _real_isdir = os.path.isdir
 _real_exists = os.path.exists
 _real_expanduser = os.path.expanduser
 
+def _flag_values(args: list[str], flag: str) -> list[str]:
+    return [args[i + 1] for i in range(len(args) - 1) if args[i] == flag]
+
+
+def _mount_destinations(args: list[str]) -> list[str]:
+    """Container destinations of every -v (src:dest[:opts]) and --tmpfs (dest[:opts]) arg."""
+    dests = [spec.split(":")[1] for spec in _flag_values(args, "-v")]
+    dests += [spec.split(":")[0] for spec in _flag_values(args, "--tmpfs")]
+    return dests
+
+
 # ─── gpu_devices ─────────────────────────────────────────────────────────────
 
 
@@ -362,6 +373,36 @@ class TestBuildRunArgsFeatures:
         tmpfs_targets = [args[i + 1] for i in range(len(args)) if args[i] == "--tmpfs" and i + 1 < len(args)]
         assert "/tmp:rw,nosuid,nodev,mode=1777" in tmpfs_targets
         assert "/root:rw,nosuid,nodev,mode=1777" in tmpfs_targets
+
+    def test_scratch_root_has_single_root_mount(self, scratch_instance):
+        """root=True: /root is only the home bind mount, no /root tmpfs."""
+        args, _warnings = build_run_args(scratch_instance, root=True)
+        dests = _mount_destinations(args)
+        assert dests.count("/root") == 1
+        assert f"{scratch_instance.home_dir}:/root" in args
+        tmpfs_dests = [d.split(":")[0] for d in _flag_values(args, "--tmpfs")]
+        assert "/root" not in tmpfs_dests
+        assert "/tmp" in tmpfs_dests
+
+    def test_scratch_non_root_keeps_root_tmpfs(self, scratch_instance):
+        args, _warnings = build_run_args(scratch_instance, root=False)
+        tmpfs_dests = [d.split(":")[0] for d in _flag_values(args, "--tmpfs")]
+        assert "/root" in tmpfs_dests
+        assert "/tmp" in tmpfs_dests
+
+    def test_fedora_root_unchanged(self, fedora_instance):
+        args, _warnings = build_run_args(fedora_instance, root=True)
+        assert f"{fedora_instance.home_dir}:/root" in args
+        assert "--tmpfs" not in args
+        assert _mount_destinations(args).count("/root") == 1
+
+    def test_no_duplicate_mount_destinations(self, scratch_instance, fedora_instance):
+        """Podman rejects duplicate destinations across -v and --tmpfs."""
+        for inst in (scratch_instance, fedora_instance):
+            for root in (False, True):
+                args, _warnings = build_run_args(inst, root=root)
+                dests = _mount_destinations(args)
+                assert len(dests) == len(set(dests)), (inst.name, root, dests)
 
     def test_fedora_instance_no_tmpfs(self, fedora_instance):
         """Fedora instances do not get tmpfs mounts (they have their own)."""

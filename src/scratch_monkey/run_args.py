@@ -104,8 +104,11 @@ def build_run_args(
             "-v", "/var/opt:/var/opt:ro",
             "-v", "/var/usrlocal:/usr/local:ro",
             "--tmpfs", "/tmp:rw,nosuid,nodev,mode=1777",
-            "--tmpfs", "/root:rw,nosuid,nodev,mode=1777",
         ]
+        # In root mode the home bind mount already provides /root; a second
+        # mount there makes podman fail with "duplicate mount destination".
+        if not root:
+            args += ["--tmpfs", "/root:rw,nosuid,nodev,mode=1777"]
 
     # Wayland
     if cfg.wayland:
