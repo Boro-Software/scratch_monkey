@@ -207,12 +207,10 @@ class TestRunDaemon:
             runner.run_daemon("mycontainer", "myimage", ["--network=host"])
             args = mock_run.call_args[0][0]
             assert "run" in args
-            assert "-d" in args
+            assert "-dit" in args
             assert "--name" in args
             assert "mycontainer" in args
             assert "myimage" in args
-            assert "sleep" in args
-            assert "infinity" in args
             assert "--init" in args
 
     def test_captures_output_and_raises_with_stderr_on_failure(self, runner):

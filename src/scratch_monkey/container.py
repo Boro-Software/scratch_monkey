@@ -169,4 +169,4 @@ class PodmanRunner:
         that way a failure raises PodmanError with real stderr detail
         instead of an empty message.
         """
-        self._run(["run", "-d", "--init", "--name", name, *run_args, image, "sleep", "infinity"], capture=True)
+        self._run(["run", "-dit", "--init", "--name", name, *run_args, image], capture=True)
