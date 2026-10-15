@@ -252,7 +252,11 @@ container, and `CONTAINER_HOST` / `DOCKER_HOST` are set to `unix://<path>` so th
   `/usr/local` (so `docker-compose`); nothing is installed.
 - **Fedora instances** have their own `/usr`. When the overlay container is created,
   scratch-monkey makes a best-effort `dnf install -y podman podman-compose`. A
-  failure prints a warning but never blocks container creation.
+  failure prints a warning but never blocks container creation. This install only
+  happens when the overlay container is created (`start`, `enter`, `refresh`);
+  non-overlay runs (`scratch-monkey run --podman`) get the socket and env vars but
+  not the client packages, unless the instance Dockerfile installs them (e.g.
+  `RUN dnf install -y podman podman-compose`).
 - **Existing overlay containers** keep their old mounts and environment. Run
   `scratch-monkey refresh <name>` after enabling this so the container is recreated
   with the socket (and, for fedora, the client packages).
