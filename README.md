@@ -185,6 +185,24 @@ Each preserving `refresh` adds one more layer to the instance's image, since it'
 
 > **Root entry:** `--root` sets the workdir to `/root`. Scratch images don't create `/root`, so scratch-monkey handles it automatically: in non-overlay mode, `/root` is a tmpfs mount; in overlay mode, `/root` is created in the container's writable layer on first root entry and persists across restarts.
 
+### Mount points inside the home
+
+The instance home is bind-mounted at `/home/<you>` (or `/root`). If a `volumes` entry targets a path *inside* it that doesn't exist yet (e.g. `~/.cargo:/home/<you>/.cargo:ro`), the container runtime would create that directory as container root. Under rootless podman that is a subuid on the host, so you'd be left with an empty directory in the instance's `home/` that you can't delete, and removing the volume wouldn't remove it.
+
+scratch-monkey avoids this: before creating a container (`run`, `enter`, `start`, `refresh`) it creates any missing mount-point directories under the home itself, as your user. It records the directories it created in `<instance>/.mountpoints.json` and, the next time a container is created, removes recorded directories that are no longer mount targets, but only if they are empty. Non-empty directories and anything not in the record are never touched. Single-file bind mounts don't get a directory.
+
+Mount targets *outside* the home (`/opt/x`, `/home/linuxbrew`) have their stub created in the container's writable layer, which `refresh` commits. When you remove such a volume, `refresh` now `rmdir`s the leftover (empty) directory in the recreated container.
+
+For stubs that already exist from earlier versions:
+
+```bash
+scratch-monkey prune-mountpoints myproject        # list, confirm, remove
+scratch-monkey prune-mountpoints --all            # every instance
+scratch-monkey prune-mountpoints myproject --yes  # skip the confirmation
+```
+
+It finds directories under the instance home that are empty (or contain only such directories), not owned by you, and not a current mount target, then removes them with `podman unshare rmdir`, which can never remove a non-empty directory.
+
 ---
 
 ## Shared volumes
@@ -403,6 +421,7 @@ Fedora instances use their own filesystem — no host system mounts.
 | `stop <name>` | Stop overlay container |
 | `reset <name>` | Remove overlay container (`--yes` to skip confirm) |
 | `refresh <name>` | Recreate overlay container, preserving installs (`--discard` for clean slate) |
+| `prune-mountpoints <name>` / `--all` | Remove stale subuid-owned empty mount-point dirs from an instance home (`--yes` to skip confirm) |
 | `export <name> <cmd> [bin]` | Export a command to `~/.local/bin` |
 | `unexport <bin>` | Remove an exported command |
 | `share create <name>` | Create a shared volume |
