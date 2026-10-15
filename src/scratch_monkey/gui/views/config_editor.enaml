@@ -107,6 +107,14 @@ enamldef ConfigEditorPanel(Container): editor:
                 tool_tip = "Forward SSH agent socket into the container"
 
             CheckBox:
+                text = "Podman socket"
+                checked << (editor.model.podman if editor.model else False)
+                toggled ::
+                    if editor.model:
+                        editor.model.podman = checked
+                tool_tip = "Share the host's rootless podman socket. Containers started inside run on the host with your user's privileges."
+
+            CheckBox:
                 text = "X11"
                 checked << (editor.model.x11 if editor.model else False)
                 toggled ::

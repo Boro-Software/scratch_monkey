@@ -93,6 +93,7 @@ scratch-monkey enter <name> --root        # root shell
 scratch-monkey run   <name>               # same as enter
 scratch-monkey run   <name> --wayland     # override: enable Wayland
 scratch-monkey run   <name> --ssh         # override: enable SSH agent
+scratch-monkey run   <name> --podman      # override: share host podman socket (see Podman access)
 scratch-monkey run   <name> --x11         # override: enable X11 sharing
 scratch-monkey run   <name> --gpu         # override: enable GPU passthrough
 scratch-monkey run   <name> --cmd /bin/zsh
@@ -113,6 +114,7 @@ All fields are optional — commented-out defaults are shown when an instance is
 | `wayland` | bool | `false` | Mount Wayland socket, set `WAYLAND_DISPLAY` |
 | `x11` | bool | `false` | Mount X11 socket, set `DISPLAY` and `XAUTHORITY` |
 | `ssh` | bool | `false` | Forward `SSH_AUTH_SOCK` for SSH agent access |
+| `podman` | bool | `false` | Share the host's rootless podman socket (see [Podman access](#podman-access-inside-instances); **grants host-level container access**) |
 | `home` | string | `""` | Override the instance `home/` dir with a custom path |
 | `volumes` | list | `[]` | Extra volume mounts (`host:container:mode`) |
 | `env` | list | `[]` | Extra environment variables (`KEY=value`) |
@@ -128,6 +130,7 @@ cmd = "/bin/zsh"
 wayland = true
 x11 = true
 ssh = true
+podman = false
 volumes = ["/home/linuxbrew/.linuxbrew:/home/linuxbrew/.linuxbrew:ro"]
 shared = ["comms", "data:ro"]
 overlay = true
@@ -210,6 +213,81 @@ shared = ["comms", "data:ro"]
 
 ---
 
+## Podman access inside instances
+
+Tools running inside an instance (an AI coding agent, say) can use `podman`,
+`podman compose`, `podman-compose` and `docker-compose` by sharing the host's
+rootless podman API socket. This is **off by default**.
+
+### Enabling
+
+Any one of:
+
+```bash
+scratch-monkey run <name> --podman        # one-off override
+```
+
+```toml
+# scratch.toml
+podman = true
+```
+
+or tick **Podman socket** in the GUI config editor.
+
+The host must be running the user podman socket:
+
+```bash
+systemctl --user enable --now podman.socket
+```
+
+If the socket is missing, scratch-monkey prints a warning with this command and
+starts the instance without it.
+
+The socket (`$XDG_RUNTIME_DIR/podman/podman.sock`, falling back to
+`/run/user/<uid>/podman/podman.sock`) is bind-mounted at the same path inside the
+container, and `CONTAINER_HOST` / `DOCKER_HOST` are set to `unix://<path>` so the
+`podman` CLI acts as a remote client and docker-compose finds the service.
+
+- **Scratch instances** already see the host's `/usr` (so `podman`) and
+  `/usr/local` (so `docker-compose`); nothing is installed.
+- **Fedora instances** have their own `/usr`. When the overlay container is created,
+  scratch-monkey makes a best-effort `dnf install -y podman podman-compose`. A
+  failure prints a warning but never blocks container creation. This install only
+  happens when the overlay container is created (`start`, `enter`, `refresh`);
+  non-overlay runs (`scratch-monkey run --podman`) get the socket and env vars but
+  not the client packages, unless the instance Dockerfile installs them (e.g.
+  `RUN dnf install -y podman podman-compose`).
+- **Existing overlay containers** keep their old mounts and environment. Run
+  `scratch-monkey refresh <name>` after enabling this so the container is recreated
+  with the socket (and, for fedora, the client packages).
+- Exported commands (`scratch-monkey export`) pick up the socket too.
+
+### Security warning
+
+> **Anything inside the container, including an AI agent, gets effective control
+> of your host user account through this socket.** It can see, stop and delete all
+> of your containers, and it can start new ones that bind-mount any host path you
+> can read or write, for example `podman run -v ~:/host ...`. This bypasses the
+> read-only mounts and the isolated home that scratch-monkey otherwise provides.
+> Do not enable it for untrusted workloads.
+
+### Path gotcha
+
+Bind-mount paths in `podman run -v` and in compose files are resolved by the
+**host** podman service against the **host** filesystem, not the container's.
+Inside the instance `$HOME` is the instance home, whose host path is
+`~/scratch-monkey/<name>/home`, so `-v $HOME/project:/src` will not find what you
+expect. Use host paths, and be careful with relative paths in compose files, which
+can resolve somewhere unexpected.
+
+### Sibling containers
+
+Containers started from inside an instance are siblings on the host, not nested.
+They show up in host `podman ps` and keep running after the overlay container is
+stopped or removed.
+
+---
+
 ## Exporting commands
 
 Make a command from an instance available on your host `PATH`:
@@ -244,7 +322,7 @@ scratch-monkey --instances-dir /path/to/dir gui  # use a custom instances direct
 The GUI provides:
 - Instance list with start/stop toggle buttons and image/overlay status
 - Quick-open buttons to open instance path or home directory in a file manager or terminal
-- Configuration editing (cmd, wayland, ssh, home, overlay, GPU passthrough)
+- Configuration editing (cmd, wayland, ssh, podman, home, overlay, GPU passthrough)
 - Volume mount management (add/remove host:container mounts, set ro/rw mode; defaults to ro)
 - Environment variable, device, and shared volume management
 - Action buttons (enter, enter as root, build, refresh overlay, reset overlay, export cmd, edit files)
@@ -315,7 +393,7 @@ Fedora instances use their own filesystem — no host system mounts.
 | `edit <name>` | Edit instance files (`--file config\|dockerfile\|env`) |
 | `build` | Build the base image (`--fedora`) |
 | `build-instance <name>` | Build an instance's Dockerfile |
-| `run <name>` | Run an instance (`--root`, `--wayland`, `--ssh`, `--x11`, `--gpu`, `--cmd`) |
+| `run <name>` | Run an instance (`--root`, `--wayland`, `--ssh`, `--podman`, `--x11`, `--gpu`, `--cmd`) |
 | `enter <name>` | Interactive shell (`--root` for root) |
 | `start <name>` | Start overlay container (creates if needed) |
 | `stop <name>` | Stop overlay container |

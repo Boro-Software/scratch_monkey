@@ -7,6 +7,11 @@
 # wayland = false
 # ssh = false
 
+# Share the host's rootless podman socket (podman, podman compose, docker-compose
+# inside the instance). SECURITY: grants host-level container access.
+# Requires on the host: systemctl --user enable --now podman.socket
+# podman = false
+
 # Custom home directory (overrides the instance home/ dir)
 # home = ""
 

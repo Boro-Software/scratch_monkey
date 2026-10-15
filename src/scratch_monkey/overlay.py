@@ -35,7 +35,8 @@ def ensure_running(
     Creates it if missing, starts it if stopped.
     Returns the container name.
 
-    For fedora-based instances, creates the host user and grants sudo.
+    For fedora-based instances, creates the host user, grants sudo, and
+    (when ``podman`` is enabled) installs the podman client tooling.
     For scratch-based instances, skips user setup entirely.
     """
     container_name = _ensure_overlay_id(instance)
@@ -50,7 +51,12 @@ def ensure_running(
         # Scratch instances mount /etc from the host read-only — the user
         # already exists on the host and sudo works via host config.
         if is_fedora_based(instance.directory):
-            _setup_fedora_user(container_name, runner, sudo=instance.config.sudo)
+            _setup_fedora_user(
+                container_name,
+                runner,
+                sudo=instance.config.sudo,
+                podman=instance.config.podman,
+            )
 
     elif not runner.container_running(container_name):
         runner.start(container_name)
@@ -58,12 +64,22 @@ def ensure_running(
     return container_name
 
 
-def _setup_fedora_user(container_name: str, runner: PodmanRunner, *, sudo: bool = True) -> None:
+def _setup_fedora_user(
+    container_name: str,
+    runner: PodmanRunner,
+    *,
+    sudo: bool = True,
+    podman: bool = False,
+) -> None:
     """Create the host user in a fedora overlay container.
 
     If sudo=True (default), also installs the sudo package and grants
     passwordless sudo to the user. If sudo=False, only useradd is run —
     the sudo package is not installed and no sudoers entry is written.
+
+    If podman=True, also does a best-effort install of the podman client
+    tooling (podman, podman-compose).  Failure is logged and warned about
+    but never raised.
     """
     username = os.environ.get("USER", "user")
     uid = os.getuid()
@@ -78,6 +94,29 @@ def _setup_fedora_user(container_name: str, runner: PodmanRunner, *, sudo: bool 
             )
         except PodmanError as exc:
             logger.debug("sudo install skipped: %s", exc)
+
+    if podman:
+        print(
+            "Installing podman client tooling in the container (this may take a minute)...",
+            file=sys.stderr,
+        )
+        try:
+            runner.exec_capture(
+                container_name,
+                [
+                    "bash", "-c",
+                    "rpm -q podman podman-compose &>/dev/null"
+                    " || dnf install -y podman podman-compose",
+                ],
+                user="root",
+            )
+        except PodmanError as exc:
+            logger.debug("podman client install failed: %s", exc)
+            print(
+                "Warning: could not install podman/podman-compose in the container "
+                f"({exc}); install them manually.",
+                file=sys.stderr,
+            )
 
     # Create user (ignore error if already exists)
     try:
