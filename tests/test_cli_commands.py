@@ -267,3 +267,58 @@ class TestBuildInstanceCommand:
         with patch("scratch_monkey.cli.main.PodmanRunner", return_value=MagicMock(spec=PodmanRunner)):
             result = r.invoke(cli, ["--instances-dir", str(d), "build-instance", "ghost"])
         assert result.exit_code != 0
+
+
+class TestListCommand:
+    def test_list_shows_status(self, tmp_path):
+        _make_instance_dir(tmp_path, "good")
+        mock = MagicMock(spec=PodmanRunner)
+        mock.image_exists.return_value = True
+        mock.container_running.return_value = True
+        r = CliRunner()
+        with patch("scratch_monkey.cli.main.PodmanRunner", return_value=mock):
+            result = r.invoke(cli, ["--instances-dir", str(tmp_path), "list"])
+        assert result.exit_code == 0
+        assert "running" in result.output
+        assert "unknown" not in result.output
+
+    def test_list_marks_status_unknown_on_podman_error(self, tmp_path):
+        from scratch_monkey.container import PodmanError
+
+        _make_instance_dir(tmp_path, "good")
+        _make_instance_dir(tmp_path, "stuck")
+        mock = MagicMock(spec=PodmanRunner)
+        mock.image_exists.return_value = True
+
+        def running(name):
+            if name == "stuck-overlay":
+                raise PodmanError("podman 'inspect' timed out: lock stuck")
+            return False
+
+        mock.container_running.side_effect = running
+        r = CliRunner()
+        with patch("scratch_monkey.cli.main.PodmanRunner", return_value=mock):
+            result = r.invoke(cli, ["--instances-dir", str(tmp_path), "list"])
+        assert result.exit_code == 0
+        lines = {ln.split()[0]: ln for ln in result.stdout.splitlines()[1:] if ln.strip()}
+        assert "stopped" in lines["good"]
+        assert "unknown" in lines["stuck"]
+        assert "stopped" not in lines["stuck"]
+        # image query succeeded, so only the OVERLAY column is unknown
+        assert lines["stuck"].split()[1:3] == ["yes", "unknown"]
+        assert "status unknown for 'stuck'" in result.stderr
+        assert "lock stuck" in result.stderr
+
+    def test_list_image_failure_only_marks_image_column(self, tmp_path):
+        from scratch_monkey.container import PodmanError
+
+        _make_instance_dir(tmp_path, "inst")
+        mock = MagicMock(spec=PodmanRunner)
+        mock.image_exists.side_effect = PodmanError("timed out")
+        mock.container_running.return_value = True
+        r = CliRunner()
+        with patch("scratch_monkey.cli.main.PodmanRunner", return_value=mock):
+            result = r.invoke(cli, ["--instances-dir", str(tmp_path), "list"])
+        row = result.stdout.splitlines()[1].split()
+        assert row[1:3] == ["unknown", "running"]
+        assert "status unknown for 'inst'" in result.stderr

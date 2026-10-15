@@ -178,9 +178,15 @@ def list_cmd(ctx: click.Context) -> None:
         return
 
     click.echo(f"{'INSTANCE':<20} {'IMAGE':<8} {'OVERLAY':<10} {'DIRECTORY':<40} CONFIG")
+    failed = []
     for info in instances:
-        built = "yes" if info.image_built else "no"
-        overlay = "running" if info.overlay_running else "stopped"
+        built = "unknown" if info.image_error else ("yes" if info.image_built else "no")
+        if info.overlay_error:
+            overlay = "unknown"
+        else:
+            overlay = "running" if info.overlay_running else "stopped"
+        if info.status_error:
+            failed.append(info)
         cfg = info.config
         active_parts = []
         if cfg.wayland:
@@ -201,6 +207,8 @@ def list_cmd(ctx: click.Context) -> None:
         click.echo(
             f"{info.name:<20} {built:<8} {overlay:<10} {str(info.directory):<40} {config_str}"
         )
+    for info in failed:
+        click.echo(f"Warning: status unknown for {info.name!r}: {info.status_error}", err=True)
 
 
 @cli.command()

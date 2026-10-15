@@ -212,6 +212,7 @@ class TestAppModelSharedEntries:
         runner.container_running.return_value = False
         runner.image_exists.return_value = False
         app = AppModel(instances_dir=instances_dir, runner=runner)
+        app.refresh()
 
         # Create a model with comms enabled
         m = InstanceModel()
@@ -238,6 +239,7 @@ class TestAppModelSharedEntries:
         runner.container_running.return_value = False
         runner.image_exists.return_value = False
         app = AppModel(instances_dir=instances_dir, runner=runner)
+        app.refresh()
 
         m = InstanceModel()
         m.shared = ["comms:ro"]
@@ -279,6 +281,7 @@ class TestGUISmoke:
         instances_dir.mkdir()
         app = AppModel(instances_dir=instances_dir, runner=runner)
         assert app.instances == []
+        app.refresh()
         assert app.status_message.startswith("Loaded")
 
     def test_enaml_views_compile(self):
@@ -1915,3 +1918,145 @@ class TestX11Model:
         assert m.dirty is False
         m.x11 = True
         assert m.dirty is True
+
+
+class TestInitialLoad:
+    """AppModel must not touch podman in __init__; the load is async."""
+
+    def _make_dir(self, tmp_path, names=("alpha", "beta")):
+        from scratch_monkey.config import save
+
+        instances_dir = tmp_path / "scratch-monkey"
+        instances_dir.mkdir()
+        for n in names:
+            d = instances_dir / n
+            d.mkdir()
+            (d / "Dockerfile").write_text("FROM scratch_monkey\n")
+            save(d / "scratch.toml", InstanceConfig())
+        return instances_dir
+
+    def _sync_call(self, app_call):
+        import threading
+        from unittest.mock import patch
+
+        done = threading.Event()
+
+        def sync_deferred_call(fn):
+            fn()
+            done.set()
+
+        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+            app_call()
+            assert done.wait(timeout=2)
+
+    def test_init_makes_no_podman_calls(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        instances_dir = self._make_dir(tmp_path)
+        runner = MagicMock()
+        app = AppModel(instances_dir=instances_dir, runner=runner)
+        assert runner.method_calls == []
+        assert app.instances == []
+
+    def test_refresh_async_shows_loading_status_while_running(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        instances_dir = self._make_dir(tmp_path)
+        app = AppModel(instances_dir=instances_dir, runner=MagicMock())
+        with patch("scratch_monkey.gui.models.threading.Thread"):
+            app.refresh_async("Loading instances...")
+        assert app.status_message == "Loading instances..."
+        assert app.busy is True
+
+    def test_initial_async_load_populates_instances(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        instances_dir = self._make_dir(tmp_path)
+        runner = MagicMock()
+        runner.image_exists.return_value = True
+        runner.container_running.return_value = False
+        app = AppModel(instances_dir=instances_dir, runner=runner)
+        self._sync_call(lambda: app.refresh_async("Loading instances..."))
+        assert [i.name for i in app.instances] == ["alpha", "beta"]
+        assert app.status_message == "Loaded 2 instance(s)"
+        assert app.error_message == ""
+        assert app.busy is False
+
+    def test_per_instance_errors_surface_in_error_message(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from scratch_monkey.container import PodmanError
+
+        instances_dir = self._make_dir(tmp_path)
+        runner = MagicMock()
+        runner.image_exists.return_value = True
+
+        def running(name):
+            if name == "beta-overlay":
+                raise PodmanError("podman 'inspect' timed out: stuck lock")
+            return False
+
+        runner.container_running.side_effect = running
+        app = AppModel(instances_dir=instances_dir, runner=runner)
+        self._sync_call(lambda: app.refresh_async("Loading instances..."))
+        assert [i.name for i in app.instances] == ["alpha", "beta"]
+        by_name = {i.name: i for i in app.instances}
+        assert by_name["alpha"].status_error == ""
+        assert "timed out" in by_name["beta"].status_error
+        assert app.error_message.startswith("Could not query podman for: beta")
+        assert "alpha" not in app.error_message
+        assert "timed out" in app.error_message
+
+    def test_whole_load_failure_sets_error_message(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from scratch_monkey.container import PodmanError
+
+        instances_dir = self._make_dir(tmp_path)
+        app = AppModel(instances_dir=instances_dir, runner=MagicMock())
+        with patch(
+            "scratch_monkey.gui.models.list_all", side_effect=PodmanError("podman is broken")
+        ):
+            self._sync_call(lambda: app.refresh_async("Loading instances..."))
+        assert "podman is broken" in app.error_message
+        assert app.status_message.startswith("Error loading instances")
+        assert app.busy is False
+
+    def test_poll_failure_does_not_clobber_error_message(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        instances_dir = self._make_dir(tmp_path, names=("alpha",))
+        runner = MagicMock()
+        runner.image_exists.return_value = False
+        runner.container_running.return_value = False
+        app = AppModel(instances_dir=instances_dir, runner=runner)
+        self._sync_call(lambda: app.refresh_async("Loading instances..."))
+        app.error_message = "Could not query podman for: alpha (x)"
+
+        runner.container_running.side_effect = RuntimeError("boom")
+        self._sync_call(app.poll_status)
+        assert app.error_message == "Could not query podman for: alpha (x)"
+        assert app._polling is False
+
+    def test_poll_skips_instance_that_times_out(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from scratch_monkey.container import PodmanError
+
+        instances_dir = self._make_dir(tmp_path)
+        runner = MagicMock()
+        runner.image_exists.return_value = False
+        runner.container_running.return_value = False
+        app = AppModel(instances_dir=instances_dir, runner=runner)
+        self._sync_call(lambda: app.refresh_async("Loading instances..."))
+
+        def running(name):
+            if name == "alpha-overlay":
+                raise PodmanError("timed out")
+            return True
+
+        runner.container_running.side_effect = running
+        self._sync_call(app.poll_status)
+        by_name = {i.name: i for i in app.instances}
+        assert by_name["alpha"].overlay_running is False  # unchanged
+        assert by_name["beta"].overlay_running is True

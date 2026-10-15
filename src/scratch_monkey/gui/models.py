@@ -139,6 +139,8 @@ class InstanceModel(Atom):
     overlay_running = Bool(False)
     overlay_id = Str("")
     base_image = Str("")
+    # Non-empty when podman could not be queried for this instance (status unknown).
+    status_error = Str("")
 
     # Config fields
     cmd = Str("/bin/bash")
@@ -169,6 +171,7 @@ class InstanceModel(Atom):
         m.overlay_running = info.overlay_running
         m.overlay_id = info.config.overlay_id
         m.base_image = info.base_image or ""
+        m.status_error = info.status_error or ""
         cfg = info.config
         m.cmd = cfg.cmd
         m.wayland = cfg.wayland
@@ -295,7 +298,8 @@ class AppModel(Atom):
         super().__init__()
         self.instances_dir = str(instances_dir)
         self._runner = runner or PodmanRunner()
-        self.refresh()
+        # No podman work here: podman can hang or be slow, so the initial load
+        # is started by the caller via refresh_async() once the window is up.
 
     # ── observers ─────────────────────────────────────────────────────────────
 
@@ -376,19 +380,31 @@ class AppModel(Atom):
             entries.append(SharedVolumeEntry(name=name, enabled=enabled, mode=mode))
         model.shared_entries = entries
 
+    def _set_instances(self, infos: list[InstanceInfo]) -> None:
+        """Replace the instance list and surface per-instance query failures."""
+        self.instances = [InstanceModel.from_info(i) for i in infos]
+        failed = [m for m in self.instances if m.status_error]
+        if failed:
+            details = "; ".join(f"{m.name} ({m.status_error})" for m in failed)
+            self.error_message = f"Could not query podman for: {details}"
+
     def refresh(self) -> None:
-        """Reload all instances from disk."""
+        """Reload all instances from disk (blocking; prefer refresh_async)."""
         instances_dir = Path(self.instances_dir)
         try:
             infos = list_all(instances_dir, self._runner)
             self.available_shared = [v.name for v in list_shared(instances_dir)]
-            self.instances = [InstanceModel.from_info(i) for i in infos]
+            self._set_instances(infos)
             self.status_message = f"Loaded {len(self.instances)} instance(s)"
         except (InstanceError, PodmanError, ConfigError) as e:
             self.status_message = f"Error loading instances: {e}"
 
-    def refresh_async(self) -> None:
-        """Reload all instances from disk in a background thread."""
+    def refresh_async(self, status: str = "Refreshing...") -> None:
+        """Reload all instances from disk in a background thread.
+
+        Also used for the initial load after the window opens (with a
+        "Loading instances..." status). Failures set error_message via _run_async.
+        """
         def work():
             instances_dir = Path(self.instances_dir)
             infos = list_all(instances_dir, self._runner)
@@ -398,13 +414,13 @@ class AppModel(Atom):
         def on_success(result):
             infos, avail = result
             self.available_shared = avail
-            self.instances = [InstanceModel.from_info(i) for i in infos]
+            self._set_instances(infos)
             self.status_message = f"Loaded {len(self.instances)} instance(s)"
 
         def on_error(exc):
             self.status_message = f"Error loading instances: {exc}"
 
-        self._run_async("Refreshing...", work, on_success, on_error)
+        self._run_async(status, work, on_success, on_error)
 
     def poll_status(self) -> None:
         """Lightweight status poller — updates overlay_running/image_built in-place."""
@@ -423,8 +439,13 @@ class AppModel(Atom):
             try:
                 results = {}
                 for name, overlay_name in snapshot:
-                    running = runner.container_running(overlay_name)
-                    built = runner.image_exists(name)
+                    try:
+                        running = runner.container_running(overlay_name)
+                        built = runner.image_exists(name)
+                    except PodmanError:
+                        # Timed out / failed for this instance: keep its last
+                        # known state and move on to the others.
+                        continue
                     results[name] = (running, built)
             except Exception:
                 deferred_call(lambda: setattr(self, '_polling', False))
@@ -605,7 +626,7 @@ class AppModel(Atom):
         def on_success(result):
             infos, avail = result
             self.available_shared = avail
-            self.instances = [InstanceModel.from_info(i) for i in infos]
+            self._set_instances(infos)
             self.selected_instance = ""
             self.status_message = f"Deleted {name!r}"
 

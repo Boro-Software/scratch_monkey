@@ -212,6 +212,56 @@ class TestListAll:
         assert by_name["fedora-inst"].base_image == "scratch_monkey_fedora"
 
 
+    def test_status_error_none_by_default(self, instances_dir, project_dir, mock_runner):
+        create("myproject", instances_dir, "scratch_monkey", project_dir)
+        assert list_all(instances_dir, mock_runner)[0].status_error is None
+
+    def test_one_failing_instance_does_not_fail_the_list(
+        self, instances_dir, project_dir, mock_runner
+    ):
+        from scratch_monkey.container import PodmanError
+
+        create("alpha", instances_dir, "scratch_monkey", project_dir)
+        create("beta", instances_dir, "scratch_monkey", project_dir)
+        create("gamma", instances_dir, "scratch_monkey", project_dir)
+        mock_runner.image_exists.return_value = True
+
+        def running(name):
+            if name == "beta-overlay":
+                raise PodmanError("timed out: stuck lock")
+            return True
+
+        mock_runner.container_running.side_effect = running
+        result = {r.name: r for r in list_all(instances_dir, mock_runner)}
+        assert set(result) == {"alpha", "beta", "gamma"}
+        assert result["alpha"].overlay_running is True
+        assert result["alpha"].status_error is None
+        assert result["gamma"].overlay_running is True
+        assert result["beta"].overlay_running is False
+        assert result["beta"].image_built is True  # image query succeeded
+        assert "stuck lock" in result["beta"].status_error
+        assert result["beta"].overlay_error == result["beta"].status_error
+        assert result["beta"].image_error is None
+
+    def test_image_query_failure_recorded(self, instances_dir, project_dir, mock_runner):
+        from scratch_monkey.container import PodmanError
+
+        create("alpha", instances_dir, "scratch_monkey", project_dir)
+        mock_runner.image_exists.side_effect = PodmanError("timed out")
+        mock_runner.container_running.return_value = True
+        info = list_all(instances_dir, mock_runner)[0]
+        assert info.image_built is False
+        assert info.status_error == "timed out"
+        assert info.image_error == "timed out"
+        assert info.overlay_error is None
+
+    def test_non_podman_errors_still_propagate(self, instances_dir, project_dir, mock_runner):
+        create("alpha", instances_dir, "scratch_monkey", project_dir)
+        mock_runner.image_exists.side_effect = RuntimeError("bug")
+        with pytest.raises(RuntimeError):
+            list_all(instances_dir, mock_runner)
+
+
 # ─── skel_copy ────────────────────────────────────────────────────────────────
 
 

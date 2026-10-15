@@ -347,6 +347,16 @@ Global options (before the command):
 - Host networking enabled (`--network=host`)
 - Container hostname is set to `<instance>.<hostname>` for prompt clarity
 
+### Troubleshooting: podman timeouts
+
+Status queries (`list`, GUI refresh/polling) give podman 15 seconds to answer. If you see
+"podman did not respond within 15s", a container lock is probably stuck (any podman command that
+touches that container, even `podman ps -a`, hangs). Quit long-running podman clients (Podman
+Desktop's API service is a common culprit), or run `podman system renumber` / reboot. The CLI
+`list` shows such instances as `unknown` with a warning on stderr, and the GUI shows a red banner
+naming the affected instances; other instances load normally. The GUI window opens immediately and
+loads instances in the background.
+
 ---
 
 ## Development

@@ -1,11 +1,16 @@
 """Tests for scratch_monkey.container module."""
 
 import subprocess
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from scratch_monkey.container import PodmanError, PodmanRunner
+from scratch_monkey.container import (
+    QUERY_TIMEOUT,
+    TERMINATE_GRACE,
+    PodmanError,
+    PodmanRunner,
+)
 
 
 def make_result(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
@@ -15,6 +20,14 @@ def make_result(returncode: int = 0, stdout: str = "", stderr: str = "") -> subp
     return r
 
 
+def make_proc(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:
+    """A fake Popen object, as used by queries that run with a timeout."""
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.communicate.return_value = (stdout, stderr)
+    return proc
+
+
 @pytest.fixture
 def runner():
     return PodmanRunner()
@@ -22,50 +35,50 @@ def runner():
 
 class TestImageExists:
     def test_returns_true_when_exists(self, runner):
-        with patch("subprocess.run", return_value=make_result(0)) as mock_run:
+        with patch("subprocess.Popen", return_value=make_proc(0)) as mock_run:
             assert runner.image_exists("myimage") is True
             mock_run.assert_called_once()
             args = mock_run.call_args[0][0]
             assert "image" in args and "exists" in args and "myimage" in args
 
     def test_returns_false_when_missing(self, runner):
-        with patch("subprocess.run", return_value=make_result(1)):
+        with patch("subprocess.Popen", return_value=make_proc(1)):
             assert runner.image_exists("missing") is False
 
 
 class TestContainerExists:
     def test_returns_true_when_exists(self, runner):
-        with patch("subprocess.run", return_value=make_result(0)):
+        with patch("subprocess.Popen", return_value=make_proc(0)):
             assert runner.container_exists("mycontainer") is True
 
     def test_returns_false_when_missing(self, runner):
-        with patch("subprocess.run", return_value=make_result(1)):
+        with patch("subprocess.Popen", return_value=make_proc(1)):
             assert runner.container_exists("mycontainer") is False
 
 
 class TestContainerRunning:
     def test_returns_true_when_running(self, runner):
-        with patch("subprocess.run", return_value=make_result(0, stdout="true")):
+        with patch("subprocess.Popen", return_value=make_proc(0, stdout="true")):
             assert runner.container_running("mycontainer") is True
 
     def test_returns_false_when_not_running(self, runner):
-        results = [make_result(0), make_result(0, stdout="false")]
-        with patch("subprocess.run", side_effect=results):
+        results = [make_proc(0), make_proc(0, stdout="false")]
+        with patch("subprocess.Popen", side_effect=results):
             assert runner.container_running("mycontainer") is False
 
     def test_returns_false_when_not_exists(self, runner):
-        with patch("subprocess.run", return_value=make_result(1)):
+        with patch("subprocess.Popen", return_value=make_proc(1)):
             assert runner.container_running("mycontainer") is False
 
 
 class TestContainerStatus:
     def test_returns_empty_when_not_exists(self, runner):
-        with patch("subprocess.run", return_value=make_result(1)):
+        with patch("subprocess.Popen", return_value=make_proc(1)):
             assert runner.container_status("mycontainer") == ""
 
     def test_returns_status_string(self, runner):
-        results = [make_result(0), make_result(0, stdout="running")]
-        with patch("subprocess.run", side_effect=results):
+        results = [make_proc(0), make_proc(0, stdout="running")]
+        with patch("subprocess.Popen", side_effect=results):
             assert runner.container_status("mycontainer") == "running"
 
 
@@ -269,3 +282,140 @@ class TestPodmanError:
         assert err.returncode == 1
         assert err.stderr == "oops"
         assert "failed" in str(err)
+
+
+class TestTimeouts:
+    def _hanging_proc(self, ignores_sigterm: bool = False) -> MagicMock:
+        """A fake Popen whose first communicate() times out (podman is stuck).
+
+        After terminate(), communicate() succeeds unless ignores_sigterm is set,
+        in which case it keeps timing out until kill().
+        """
+        proc = MagicMock()
+        proc.returncode = -15
+        state = {"killed": False, "terminated": False}
+        proc.terminate.side_effect = lambda: state.update(terminated=True)
+        proc.kill.side_effect = lambda: state.update(killed=True)
+
+        def communicate(input=None, timeout=None):
+            if state["terminated"] and not ignores_sigterm:
+                return ("", "")
+            raise subprocess.TimeoutExpired("podman", timeout)
+
+        proc.communicate.side_effect = communicate
+        return proc
+
+    def test_run_translates_timeout_to_podman_error(self, runner):
+        with patch("subprocess.Popen", return_value=self._hanging_proc()):
+            with pytest.raises(PodmanError) as excinfo:
+                runner._run(["inspect", "sm-1234"], timeout=5)
+        msg = str(excinfo.value)
+        assert "sm-1234" in msg
+        assert "5s" in msg
+        assert "podman ps -a" in msg
+        assert "podman system renumber" in msg
+
+    def test_timeout_sends_sigterm_first_and_does_not_kill_if_it_exits(self, runner):
+        proc = self._hanging_proc()
+        with patch("subprocess.Popen", return_value=proc):
+            with pytest.raises(PodmanError):
+                runner._run(["inspect", "c"], timeout=5)
+        proc.terminate.assert_called_once()
+        proc.kill.assert_not_called()
+        # first wait uses the query timeout, second the SIGTERM grace period
+        timeouts = [c.kwargs["timeout"] for c in proc.communicate.call_args_list]
+        assert timeouts == [5, TERMINATE_GRACE]
+
+    def test_timeout_kills_only_if_sigterm_is_ignored(self, runner):
+        proc = self._hanging_proc(ignores_sigterm=True)
+        order = MagicMock()
+        order.attach_mock(proc.terminate, "terminate")
+        order.attach_mock(proc.kill, "kill")
+        order.attach_mock(proc.wait, "wait")
+        with patch("subprocess.Popen", return_value=proc):
+            with pytest.raises(PodmanError, match="did not respond"):
+                runner._run(["inspect", "c"], timeout=5)
+        assert [c[0] for c in order.mock_calls] == ["terminate", "kill", "wait"]
+
+    def test_timeout_path_returns_completed_process(self, runner):
+        with patch("subprocess.Popen", return_value=make_proc(0, "out", "err")) as popen:
+            result = runner._run(["ps"], timeout=7, input="in")
+        assert (result.returncode, result.stdout, result.stderr) == (0, "out", "err")
+        assert popen.call_args.kwargs["stdin"] == subprocess.PIPE
+        assert popen.call_args.kwargs["stdout"] == subprocess.PIPE
+        assert popen.call_args.kwargs["text"] is True
+        popen.return_value.communicate.assert_called_once_with(input="in", timeout=7)
+
+    def test_timeout_path_honours_capture_false(self, runner):
+        with patch("subprocess.Popen", return_value=make_proc(0)) as popen:
+            runner._run(["ps"], timeout=7, capture=False)
+        assert popen.call_args.kwargs["stdout"] is None
+        assert popen.call_args.kwargs["stderr"] is None
+        assert popen.call_args.kwargs["stdin"] is None
+
+    def test_timeout_path_still_checks_returncode(self, runner):
+        with patch("subprocess.Popen", return_value=make_proc(2, stderr="bad")):
+            with pytest.raises(PodmanError, match="bad"):
+                runner._run(["ps"], timeout=7)
+
+    def test_no_timeout_uses_subprocess_run(self, runner):
+        with patch("subprocess.run", return_value=make_result(0)) as mock_run:
+            runner._run(["ps"])
+        assert "timeout" not in mock_run.call_args.kwargs
+
+    QUERIES = [
+        lambda r: r.image_exists("img"),
+        lambda r: r.container_exists("c"),
+        lambda r: r.container_running("c"),
+        lambda r: r.container_status("c"),
+    ]
+    QUERY_IDS = ["image_exists", "container_exists", "container_running", "container_status"]
+
+    @pytest.mark.parametrize("call", QUERIES, ids=QUERY_IDS)
+    def test_queries_raise_on_timeout_not_false(self, runner, call):
+        with patch("subprocess.Popen", return_value=self._hanging_proc()):
+            with pytest.raises(PodmanError, match="did not respond"):
+                call(runner)
+
+    def test_container_running_raises_when_inspect_times_out(self, runner):
+        procs = [make_proc(0), self._hanging_proc()]
+        with patch("subprocess.Popen", side_effect=procs):
+            with pytest.raises(PodmanError):
+                runner.container_running("c")
+
+    @pytest.mark.parametrize("call", QUERIES, ids=QUERY_IDS)
+    def test_queries_pass_query_timeout(self, runner, call):
+        with patch("subprocess.Popen", return_value=make_proc(0, stdout="true")) as popen:
+            call(runner)
+        assert popen.call_count >= 1
+        for c in popen.return_value.communicate.call_args_list:
+            assert c.kwargs["timeout"] == QUERY_TIMEOUT
+
+    LIFECYCLE = [
+        lambda r: r.run_daemon("c", "img", []),
+        lambda r: r.build("t", "."),
+        lambda r: r.stop("c"),
+        lambda r: r.start("c"),
+        lambda r: r.remove("c"),
+        lambda r: r.rmi("img"),
+        lambda r: r.tag("a", "b"),
+        lambda r: r.commit("c", "img"),
+        lambda r: r.run(["img"]),
+        lambda r: r.exec_in("c", ["ls"]),
+        lambda r: r.exec_interactive("c", ["sh"]),
+        lambda r: r.exec_capture("c", ["ls"]),
+    ]
+    LIFECYCLE_IDS = [
+        "run_daemon", "build", "stop", "start", "remove", "rmi", "tag",
+        "commit", "run", "exec_in", "exec_interactive", "exec_capture",
+    ]
+
+    @pytest.mark.parametrize("call", LIFECYCLE, ids=LIFECYCLE_IDS)
+    def test_lifecycle_methods_have_no_timeout(self, runner, call):
+        with (
+            patch("subprocess.run", return_value=make_result(0)) as mock_run,
+            patch("subprocess.Popen") as popen,
+        ):
+            call(runner)
+        assert "timeout" not in mock_run.call_args.kwargs
+        popen.assert_not_called()

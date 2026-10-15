@@ -45,6 +45,9 @@ def launch(instances_dir: Path) -> None:
     view = ScratchMonkeyWindow(app_model=app_model)
     view.show()
 
+    # Load instances after the window is up so a slow/hung podman never blocks startup.
+    QTimer.singleShot(0, lambda: app_model.refresh_async("Loading instances..."))
+
     poll_timer = QTimer()
     poll_timer.timeout.connect(lambda: app_model.poll_status())
     poll_timer.start(5000)
