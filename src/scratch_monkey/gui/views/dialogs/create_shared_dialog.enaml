@@ -42,7 +42,7 @@ enamldef CreateSharedDialog(Dialog): dlg:
                     enabled << bool(name_field.text.strip())
                     clicked ::
                         start_working(dlg)
-                        dlg.app_model.create_shared_volume(name_field.text.strip(), make_on_done(dlg))
+                        dlg.app_model.shared.create(name_field.text.strip(), make_on_done(dlg))
 
                 PushButton:
                     text = "Cancel"

@@ -257,9 +257,13 @@ src/scratch_monkey/
   export.py      — export_command / unexport
   cli/main.py    — Click CLI (all user commands)
   gui/           — Enaml GUI (optional)
+    models/        — Atom models; AppModel = shared state + async machinery
+    controllers/   — action controllers owned by AppModel (instances, overlays, shared, tools)
+    views/         — .enaml views and dialogs
 tests/
   conftest.py    — shared fixtures (mock_runner, instance fixtures)
-  test_*.py      — unit tests per module
+  gui_helpers.py — shared GUI test helpers (make_app, call_sync, ...)
+  test_*.py      — unit tests per module (GUI: test_gui_models.py, test_gui_controllers_*.py)
 ```
 
 ### Podman Boundary

@@ -1,4 +1,7 @@
-"""Tests for scratch_monkey.gui.models volume support."""
+"""Tests for scratch_monkey.gui.models: entries, InstanceModel, AppModel state and async helpers.
+
+Action tests live in tests/test_gui_controllers_*.py; shared helpers in tests/gui_helpers.py.
+"""
 
 from pathlib import Path
 
@@ -14,54 +17,14 @@ from scratch_monkey.gui.models import (  # noqa: E402
     VolumeMountEntry,
 )
 from scratch_monkey.instance import InstanceInfo  # noqa: E402
-from scratch_monkey.run_args import DEFAULT_BASE_IMAGE  # noqa: E402
 
-# ── helpers: drive background AppModel actions to completion ────────────────
-
-def _wait(event, what="background action"):
-    assert event.wait(timeout=5), f"{what} did not complete"
-
-
-def call_sync(method, *args, **kwargs) -> str:
-    """Call an on_done-style AppModel method, wait for it, return its err string.
-
-    deferred_call is replaced with direct execution so the completion handlers
-    run on the worker thread; the work itself still runs inside _run_async.
-    """
-    import threading
-    from unittest.mock import patch
-
-    done = threading.Event()
-    out: list[str] = []
-
-    def on_done(err):
-        out.append(err)
-        done.set()
-
-    with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
-        method(*args, on_done, **kwargs)
-        _wait(done)
-    return out[0]
-
-
-def create_sync(app, name, **kwargs) -> str:
-    return call_sync(app.create_instance, name, **kwargs)
-
-
-def refresh_sync(app, **kwargs) -> None:
-    """Run refresh_async to completion (replaces the removed blocking refresh())."""
-    import threading
-    from unittest.mock import patch
-
-    done = threading.Event()
-
-    def sync_deferred_call(fn):
-        fn()
-        done.set()
-
-    with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
-        app.refresh_async(**kwargs)
-        _wait(done)
+from .gui_helpers import (  # noqa: E402
+    create_sync,
+    make_app,
+    refresh_sync,
+    sync_deferred_call,
+    wait,
+)
 
 
 class TestVolumeMountEntry:
@@ -297,6 +260,97 @@ class TestAppModelSharedEntries:
         assert comms.mode == "ro"
 
 
+class TestAppModelNewInstanceModel:
+    def test_new_instance_model(self, tmp_path):
+        app, instances_dir, project_dir = make_app(tmp_path)
+
+        # Add a shared volume
+        shared_dir = instances_dir / ".shared"
+        shared_dir.mkdir()
+        (shared_dir / "comms").mkdir()
+
+        refresh_sync(app)
+        m = app.new_instance_model()
+
+        assert isinstance(m, InstanceModel)
+        assert len(m.shared_entries) == 1
+        assert m.shared_entries[0].name == "comms"
+
+
+class TestControllerWiring:
+    """AppModel owns the action controllers and exposes the controller API."""
+
+    # Every action that moved off AppModel; none may linger as a shim.
+    _MOVED = [
+        "start_instance", "stop_instance", "build_instance", "enter_instance",
+        "reset_overlay", "refresh_overlay", "delete_instance", "rename_instance",
+        "clone_instance", "create_instance", "create_shared_volume",
+        "export_command", "edit_file", "edit_config", "open_directory",
+        "open_terminal", "_run_async", "_run_then_reload",
+    ]
+
+    def test_app_model_exposes_controllers(self, tmp_path):
+        from scratch_monkey.gui.controllers import (
+            InstanceController,
+            OverlayController,
+            SharedVolumeController,
+            ToolsController,
+        )
+
+        app, _, _ = make_app(tmp_path)
+        assert isinstance(app.instance_actions, InstanceController)
+        assert isinstance(app.overlays, OverlayController)
+        assert isinstance(app.shared, SharedVolumeController)
+        assert isinstance(app.tools, ToolsController)
+        # `instances` stays the observable list of InstanceModel, not a controller
+        assert app.instances == []
+
+    def test_controllers_are_per_app(self, tmp_path):
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        app1, _, _ = make_app(tmp_path / "a")
+        app2, _, _ = make_app(tmp_path / "b")
+        assert app1.overlays is not app2.overlays
+        assert app1.overlays._app is app1
+
+    @pytest.mark.parametrize("name", _MOVED)
+    def test_old_action_methods_are_gone(self, name):
+        assert not hasattr(AppModel, name)
+
+    def test_runner_property_returns_runner(self, tmp_path):
+        app, _, _ = make_app(tmp_path)
+        assert app.runner is app._runner
+
+    def test_defer_goes_through_deferred_call(self, tmp_path):
+        from unittest.mock import patch
+
+        app, _, _ = make_app(tmp_path)
+        calls = []
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=calls.append):
+            fn = object()
+            app.defer(fn)
+        assert calls == [fn]
+
+    def test_reload_when_idle_starts_reload_immediately(self, tmp_path):
+        from unittest.mock import patch
+
+        app, _, _ = make_app(tmp_path)
+        with patch.object(AppModel, "refresh_async") as refresh:
+            app.reload_when_idle("Reloaded")
+        refresh.assert_called_once_with("Reloading config...", done_status="Reloaded")
+        assert app._reload_pending == ""
+
+    def test_reload_when_idle_queues_while_busy(self, tmp_path):
+        from unittest.mock import patch
+
+        app, _, _ = make_app(tmp_path)
+        app.busy = True
+        with patch.object(AppModel, "refresh_async") as refresh:
+            app.reload_when_idle("Reloaded")
+        refresh.assert_not_called()
+        assert app._reload_pending == "Reloaded"
+
+
 class TestGUISmoke:
     """Smoke tests to verify the GUI import chain works."""
 
@@ -348,357 +402,6 @@ class TestGUISmoke:
                 export_dialog,  # noqa: F401
                 rename_dialog,  # noqa: F401
             )
-
-
-class TestAppModelCreateInstance:
-    """Tests for AppModel.create_instance()."""
-
-    def _make_app(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-
-        instances_dir = tmp_path / "scratch-monkey"
-        instances_dir.mkdir()
-
-        runner = MagicMock()
-        runner.container_exists.return_value = False
-        runner.container_running.return_value = False
-        runner.image_exists.return_value = False
-
-        # Patch PROJECT_DIR to use a temp dir with scratch.toml.default
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            app = AppModel(instances_dir=instances_dir, runner=runner)
-
-        return app, instances_dir, project_dir
-
-    def test_create_success(self, tmp_path):
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-        assert len(app.instances) == 0
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            result = create_sync(app, "myinst")
-
-        assert result == ""
-        assert (instances_dir / "myinst").is_dir()
-        assert (instances_dir / "myinst" / "scratch.toml").exists()
-        assert app.selected_instance == "myinst"
-        assert any(i.name == "myinst" for i in app.instances)
-
-    def test_create_invalid_name(self, tmp_path):
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            result = create_sync(app, "bad name!")
-
-        assert result != ""
-        assert len(app.instances) == 0
-
-    def test_create_duplicate(self, tmp_path):
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "dup")
-            result = create_sync(app, "dup")
-
-        assert result != ""
-
-    def test_create_fedora(self, tmp_path):
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            result = create_sync(app, "fed", fedora=True)
-
-        assert result == ""
-        dockerfile = (instances_dir / "fed" / "Dockerfile").read_text()
-        assert "fedora" in dockerfile.lower()
-
-    def test_create_selects_new_instance(self, tmp_path):
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "first")
-            create_sync(app, "second")
-
-        assert app.selected_instance == "second"
-
-    def test_create_with_config_override(self, tmp_path):
-        from unittest.mock import patch
-
-        from scratch_monkey.config import InstanceConfig, load
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        custom_cfg = InstanceConfig(cmd="/bin/zsh", wayland=True, env=["EDITOR=vim"])
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            result = create_sync(app, "configured", config=custom_cfg)
-
-        assert result == ""
-        saved = load(instances_dir / "configured" / "scratch.toml")
-        assert saved.cmd == "/bin/zsh"
-        assert saved.wayland is True
-        assert "EDITOR=vim" in saved.env
-
-    def test_create_without_config_uses_default(self, tmp_path):
-        from unittest.mock import patch
-
-        from scratch_monkey.config import load
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            result = create_sync(app, "default-cfg")
-
-        assert result == ""
-        saved = load(instances_dir / "default-cfg" / "scratch.toml")
-        assert saved.cmd == "/bin/bash"  # default
-
-    def test_new_instance_model(self, tmp_path):
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        # Add a shared volume
-        shared_dir = instances_dir / ".shared"
-        shared_dir.mkdir()
-        (shared_dir / "comms").mkdir()
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            refresh_sync(app)
-            m = app.new_instance_model()
-
-        assert isinstance(m, InstanceModel)
-        assert len(m.shared_entries) == 1
-        assert m.shared_entries[0].name == "comms"
-
-
-class TestAppModelCreateSharedVolume:
-    """Tests for AppModel.create_shared_volume()."""
-
-    def _make_app(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-
-        instances_dir = tmp_path / "scratch-monkey"
-        instances_dir.mkdir()
-
-        runner = MagicMock()
-        runner.container_exists.return_value = False
-        runner.container_running.return_value = False
-        runner.image_exists.return_value = False
-
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            app = AppModel(instances_dir=instances_dir, runner=runner)
-
-        return app, instances_dir, project_dir
-
-    def test_create_shared_volume_success(self, tmp_path):
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            result = call_sync(app.create_shared_volume, "mydata")
-
-        assert result == ""
-        assert (instances_dir / ".shared" / "mydata").is_dir()
-        assert "mydata" in app.available_shared
-
-    def test_create_shared_volume_duplicate(self, tmp_path):
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            call_sync(app.create_shared_volume, "dup")
-            result = call_sync(app.create_shared_volume, "dup")
-
-        assert result != ""
-
-    def test_create_shared_volume_invalid_name(self, tmp_path):
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            result = call_sync(app.create_shared_volume, "bad name!")
-
-        assert result != ""
-
-
-class TestAppModelRenameInstance:
-    """Tests for AppModel.rename_instance()."""
-
-    def _make_app(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-
-        instances_dir = tmp_path / "scratch-monkey"
-        instances_dir.mkdir()
-
-        runner = MagicMock()
-        runner.container_exists.return_value = False
-        runner.container_running.return_value = False
-        runner.image_exists.return_value = False
-
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            app = AppModel(instances_dir=instances_dir, runner=runner)
-
-        return app, instances_dir, project_dir
-
-    def test_rename_success(self, tmp_path):
-        """Rename returns '' and updates state on success."""
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        # Create an instance first
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "old")
-        app.selected_instance = "old"
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            err = call_sync(app.rename_instance, "old", "new")
-
-        assert err == ""
-        assert app.selected_instance == "new"
-        assert (instances_dir / "new").is_dir()
-        assert not (instances_dir / "old").is_dir()
-
-    def test_rename_updates_selected(self, tmp_path):
-        """When renaming the selected instance, selected_instance updates."""
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-        app.selected_instance = "myinst"
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            err = call_sync(app.rename_instance, "myinst", "renamed")
-
-        assert err == ""
-        assert app.selected_instance == "renamed"
-
-    def test_rename_failure_returns_error(self, tmp_path):
-        """On failure, returns the error string without changing state."""
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-        app.selected_instance = "myinst"
-
-        # Renaming nonexistent instance should raise an error
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            err = call_sync(app.rename_instance, "nonexistent", "whatever")
-
-        assert err != ""
-        assert app.selected_instance == "myinst"  # unchanged
-
-
-class TestAppModelCloneInstance:
-    """Tests for AppModel.clone_instance()."""
-
-    def _make_app(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-
-        instances_dir = tmp_path / "scratch-monkey"
-        instances_dir.mkdir()
-
-        runner = MagicMock()
-        runner.container_exists.return_value = False
-        runner.container_running.return_value = False
-        runner.image_exists.return_value = False
-
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            app = AppModel(instances_dir=instances_dir, runner=runner)
-
-        return app, instances_dir, project_dir
-
-    def test_clone_success(self, tmp_path):
-        """Clone returns '' and selects the clone on success."""
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "source")
-            err = call_sync(app.clone_instance, "source", "dest")
-
-        assert err == ""
-        assert app.selected_instance == "dest"
-        assert (instances_dir / "dest").is_dir()
-
-    def test_clone_selects_new_instance(self, tmp_path):
-        """After cloning, selected_instance is set to the dest name."""
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "orig")
-            err = call_sync(app.clone_instance, "orig", "clone")
-
-        assert err == ""
-        assert app.selected_instance == "clone"
-        assert any(i.name == "clone" for i in app.instances)
-
-    def test_clone_failure_returns_error(self, tmp_path):
-        """On failure, returns the error string without changing selected."""
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "source")
-            create_sync(app, "existing")
-        app.selected_instance = "source"
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            err = call_sync(app.clone_instance, "source", "existing")
-
-        assert err != ""
-        assert app.selected_instance == "source"  # unchanged
-
-    def test_clone_passes_runner_and_tags_image(self, tmp_path):
-        """Clone passes runner to clone(); runner.tag() called when image exists."""
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "source")
-
-        # Mark source image as existing so tag() gets called
-        app._runner.image_exists.return_value = True
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            err = call_sync(app.clone_instance, "source", "dest")
-
-        assert err == ""
-        app._runner.tag.assert_called_once_with("source", "dest")
 
 
 class TestInstanceModelEnvVars:
@@ -855,14 +558,14 @@ class TestInstanceModelDirty:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.controllers.instances.PROJECT_DIR", project_dir):
             app = AppModel(instances_dir=instances_dir, runner=runner)
 
         # No instances, no unsaved changes
         assert app.has_unsaved_changes() is False
 
         # Create an instance
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.controllers.instances.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         # Initially not dirty
@@ -875,200 +578,15 @@ class TestInstanceModelDirty:
         assert app.has_unsaved_changes() is True
 
 
-class TestAppModelExportCommand:
-    """Tests for AppModel.export_command()."""
-
-    def _make_app(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-
-        instances_dir = tmp_path / "scratch-monkey"
-        instances_dir.mkdir()
-
-        runner = MagicMock()
-        runner.container_exists.return_value = False
-        runner.container_running.return_value = False
-        runner.image_exists.return_value = False
-
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            app = AppModel(instances_dir=instances_dir, runner=runner)
-
-        return app, instances_dir, project_dir
-
-    def test_export_command_success(self, tmp_path):
-        """export_command returns '' and sets status on success."""
-        from pathlib import Path as P
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        mock_path = P("/home/user/.local/bin/rg")
-        with patch("scratch_monkey.gui.models.app.export_command_fn", return_value=mock_path) as mock_export:
-            err = app.export_command("myinst", "/usr/bin/rg")
-
-        assert err == ""
-        assert "rg" in app.status_message
-        assert "myinst" in app.status_message
-        mock_export.assert_called_once()
-        # Verify the Instance and cmd were passed correctly
-        call_args = mock_export.call_args
-        assert call_args[0][1] == "/usr/bin/rg"
-        assert call_args[1]["bin_name"] == ""
-
-    def test_export_command_not_found(self, tmp_path):
-        """export_command returns error for nonexistent instance."""
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        err = app.export_command("nonexistent", "/usr/bin/rg")
-        assert err != ""
-        assert "nonexistent" in err
-
-    def test_export_command_with_bin_name(self, tmp_path):
-        """export_command passes bin_name to export_command_fn."""
-        from pathlib import Path as P
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        mock_path = P("/home/user/.local/bin/ripgrep")
-        with patch("scratch_monkey.gui.models.app.export_command_fn", return_value=mock_path) as mock_export:
-            err = app.export_command("myinst", "/usr/bin/rg", "ripgrep")
-
-        assert err == ""
-        call_args = mock_export.call_args
-        assert call_args[1]["bin_name"] == "ripgrep"
-
-    def test_export_command_exception(self, tmp_path):
-        """export_command returns error string when export_command_fn raises."""
-        from unittest.mock import patch
-
-        from scratch_monkey.export import ExportError
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        with patch("scratch_monkey.gui.models.app.export_command_fn", side_effect=ExportError("disk full")):
-            err = app.export_command("myinst", "/usr/bin/rg")
-
-        assert err == "disk full"
-
-
-class TestAppModelEditFile:
-    """Tests for AppModel.edit_file()."""
-
-    def _make_app(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-
-        instances_dir = tmp_path / "scratch-monkey"
-        instances_dir.mkdir()
-
-        runner = MagicMock()
-        runner.container_exists.return_value = False
-        runner.container_running.return_value = False
-        runner.image_exists.return_value = False
-
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            app = AppModel(instances_dir=instances_dir, runner=runner)
-
-        return app, instances_dir, project_dir
-
-    def test_edit_dockerfile_success(self, tmp_path):
-        """edit_file opens Dockerfile in editor and sets status."""
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        with patch("scratch_monkey.gui.models.app._open_in_editor", return_value="") as mock_edit:
-            app.edit_file("myinst", "dockerfile")
-
-        mock_edit.assert_called_once()
-        called_path = mock_edit.call_args[0][0]
-        assert called_path == instances_dir / "myinst" / "Dockerfile"
-        assert "Editing dockerfile" in app.status_message
-
-    def test_edit_env_success(self, tmp_path):
-        """edit_file opens .env in editor and sets status."""
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        with patch("scratch_monkey.gui.models.app._open_in_editor", return_value="") as mock_edit:
-            app.edit_file("myinst", "env")
-
-        mock_edit.assert_called_once()
-        called_path = mock_edit.call_args[0][0]
-        assert called_path == instances_dir / "myinst" / ".env"
-        assert "Editing env" in app.status_message
-
-    def test_edit_file_not_found(self, tmp_path):
-        """edit_file sets error status for nonexistent instance."""
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        app.edit_file("nonexistent", "dockerfile")
-        assert "not found" in app.status_message
-
-    def test_edit_file_editor_error(self, tmp_path):
-        """edit_file propagates editor error to status_message."""
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        with patch("scratch_monkey.gui.models.app._open_in_editor", return_value="No terminal emulator found."):
-            app.edit_file("myinst", "dockerfile")
-
-        assert "No terminal emulator found." in app.status_message
-
-
 class TestRunAsync:
-    """Tests for AppModel._run_async background task helper."""
-
-    def _make_app(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-
-        instances_dir = tmp_path / "scratch-monkey"
-        instances_dir.mkdir()
-
-        runner = MagicMock()
-        runner.container_exists.return_value = False
-        runner.container_running.return_value = False
-        runner.image_exists.return_value = False
-
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            app = AppModel(instances_dir=instances_dir, runner=runner)
-
-        return app, instances_dir, project_dir
+    """Tests for AppModel.run_async background task helper."""
 
     def test_run_async_sets_busy_and_calls_on_success(self, tmp_path):
-        """_run_async sets busy=True, runs work, then calls on_success with result."""
+        """run_async sets busy=True, runs work, then calls on_success with result."""
         import threading
         from unittest.mock import patch
 
-        app, _, project_dir = self._make_app(tmp_path)
+        app, _, project_dir = make_app(tmp_path)
 
         # Replace deferred_call with synchronous execution for testing
         with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
@@ -1082,18 +600,18 @@ class TestRunAsync:
                 results.append(result)
                 done.set()
 
-            app._run_async("Working...", work, on_success)
-            _wait(done)
+            app.run_async("Working...", work, on_success)
+            wait(done)
 
         assert results == [42]
         assert app.busy is False
 
     def test_run_async_calls_on_error(self, tmp_path):
-        """_run_async calls on_error when work() raises."""
+        """run_async calls on_error when work() raises."""
         import threading
         from unittest.mock import patch
 
-        app, _, project_dir = self._make_app(tmp_path)
+        app, _, project_dir = make_app(tmp_path)
 
         with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
             errors = []
@@ -1106,50 +624,44 @@ class TestRunAsync:
                 errors.append(str(exc))
                 done.set()
 
-            app._run_async("Working...", work, on_error=on_error)
-            _wait(done)
+            app.run_async("Working...", work, on_error=on_error)
+            wait(done)
 
         assert errors == ["boom"]
         assert app.busy is False
 
     def test_run_async_default_error_sets_status(self, tmp_path):
-        """Without on_error, _run_async sets status_message to error string."""
+        """Without on_error, run_async sets status_message to error string."""
         import threading
-        from unittest.mock import patch
 
-        app, _, project_dir = self._make_app(tmp_path)
+        app, _, project_dir = make_app(tmp_path)
         done = threading.Event()
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
+        with sync_deferred_call(done):
             def work():
                 raise RuntimeError("something broke")
 
-            app._run_async("Working...", work)
-            _wait(done)
+            app.run_async("Working...", work)
+            wait(done)
 
         assert "something broke" in app.status_message
         assert app.busy is False
 
     def test_run_async_reentrant_guard(self, tmp_path):
-        """_run_async returns immediately if already busy."""
-        app, _, project_dir = self._make_app(tmp_path)
+        """run_async returns immediately if already busy."""
+        app, _, project_dir = make_app(tmp_path)
         app.busy = True
 
         called = []
-        app._run_async("Working...", lambda: called.append(1))
+        app.run_async("Working...", lambda: called.append(1))
         assert called == []
 
     def test_run_async_busy_sets_status_and_skips_work(self, tmp_path):
-        """A second _run_async call while busy sets a busy status message
+        """A second run_async call while busy sets a busy status message
         (naming the in-flight operation) and does NOT invoke the new work()."""
         import threading
-        from unittest.mock import patch
 
-        app, _, project_dir = self._make_app(tmp_path)
+        app, _, project_dir = make_app(tmp_path)
         gate = threading.Event()
         release = threading.Event()
         done = threading.Event()
@@ -1159,24 +671,20 @@ class TestRunAsync:
             release.wait(timeout=2)
             return None
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
-            app._run_async("Refreshing 'foo'...", first_work, on_success=lambda r: None)
-            _wait(gate, "first_work start")
+        with sync_deferred_call(done):
+            app.run_async("Refreshing 'foo'...", first_work, on_success=lambda r: None)
+            wait(gate, "first_work start")
             assert app.busy is True
 
             second_called = []
-            app._run_async("Second op...", lambda: second_called.append(1))
+            app.run_async("Second op...", lambda: second_called.append(1))
 
             assert second_called == []
             assert "Busy" in app.status_message
             assert "Refreshing 'foo'..." in app.status_message
 
             release.set()
-            _wait(done)
+            wait(done)
 
         assert app.busy is False
 
@@ -1184,276 +692,70 @@ class TestRunAsync:
         """error_message from a prior failed operation is cleared when a new
         operation starts."""
         import threading
-        from unittest.mock import patch
 
-        app, _, project_dir = self._make_app(tmp_path)
+        app, _, project_dir = make_app(tmp_path)
         done = threading.Event()
 
         def failing_work():
             raise RuntimeError("first failure")
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
-            app._run_async("First op...", failing_work)
-            _wait(done)
+        with sync_deferred_call(done):
+            app.run_async("First op...", failing_work)
+            wait(done)
 
         assert "first failure" in app.error_message
 
         done2 = threading.Event()
 
-        def sync_deferred_call2(fn):
-            fn()
-            done2.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call2):
-            app._run_async("Second op...", lambda: None, on_success=lambda r: None)
-            _wait(done2)
+        with sync_deferred_call(done2):
+            app.run_async("Second op...", lambda: None, on_success=lambda r: None)
+            wait(done2)
 
         assert app.error_message == ""
 
     def test_run_async_sets_error_message_on_failure(self, tmp_path):
-        """_run_async sets error_message (in addition to status_message) when
+        """run_async sets error_message (in addition to status_message) when
         work() raises, even when a tailored on_error callback is provided."""
         import threading
-        from unittest.mock import patch
 
-        app, _, project_dir = self._make_app(tmp_path)
+        app, _, project_dir = make_app(tmp_path)
         done = threading.Event()
 
         def failing_work():
             raise RuntimeError("disk on fire")
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
         def on_error(exc):
             app.status_message = f"Custom: {exc}"
 
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
-            app._run_async("Working...", failing_work, on_error=on_error)
-            _wait(done)
+        with sync_deferred_call(done):
+            app.run_async("Working...", failing_work, on_error=on_error)
+            wait(done)
 
         assert "disk on fire" in app.error_message
         assert app.status_message == "Custom: disk on fire"
 
-    def test_delete_instance_async(self, tmp_path):
-        """delete_instance uses _run_async (sets busy, calls delete, refreshes)."""
-        import threading
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "todelete")
-
-        assert any(i.name == "todelete" for i in app.instances)
-        app.selected_instance = "todelete"
-
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
-            app.delete_instance("todelete")
-            _wait(done)
-
-        assert app.busy is False
-        assert app.selected_instance == ""
-        assert "Deleted" in app.status_message
-
-    def test_reset_overlay_async(self, tmp_path):
-        """reset_overlay updates overlay_running in-place (no full refresh)."""
-        import threading
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        # Pre-set overlay_running to True so we can verify it gets cleared
-        inst = next(i for i in app.instances if i.name == "myinst")
-        inst.overlay_running = True
-        instances_before = app.instances
-
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.app.overlay_reset", return_value=True),
-        ):
-            app.reset_overlay("myinst")
-            _wait(done)
-
-        assert app.busy is False
-        assert "removed" in app.status_message
-        # Verify in-place update: same list object, overlay_running cleared
-        assert app.instances is instances_before
-        assert inst.overlay_running is False
-
-    def test_stop_instance(self, tmp_path):
-        """stop_instance stops the overlay container and clears overlay_running."""
-        import threading
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        inst = next(i for i in app.instances if i.name == "myinst")
-        inst.overlay_running = True
-        instances_before = app.instances
-
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
-            app.stop_instance("myinst")
-            _wait(done)
-
-        assert app.busy is False
-        assert "Stopped" in app.status_message
-        assert app.instances is instances_before
-        assert inst.overlay_running is False
-
-    def test_stop_instance_not_found(self, tmp_path):
-        """stop_instance sets error status for nonexistent instance."""
-        app, _, _ = self._make_app(tmp_path)
-
-        app.stop_instance("nonexistent")
-        assert app.busy is False
-        assert "not found" in app.status_message
-
-    def test_start_instance(self, tmp_path):
-        """start_instance calls ensure_running and sets overlay_running."""
-        import threading
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        inst = next(i for i in app.instances if i.name == "myinst")
-        assert inst.overlay_running is False
-        instances_before = app.instances
-
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.app.overlay_ensure_running") as mock_ensure,
-        ):
-            app.start_instance("myinst")
-            _wait(done)
-
-        mock_ensure.assert_called_once()
-        assert app.busy is False
-        assert "Started" in app.status_message
-        assert app.instances is instances_before
-        assert inst.overlay_running is True
-
-    @pytest.mark.parametrize(
-        "method,target,expected",
-        [
-            ("start_instance", "overlay_ensure_running", "Error starting 'myinst': podman broke"),
-            ("stop_instance", None, "Error stopping 'myinst': podman broke"),
-        ],
-    )
-    def test_start_stop_error_sets_status_before_polling(
-        self, tmp_path, method, target, expected
-    ):
-        """on_error sets status_message first, then polls (poll thread must not race it)."""
-        import contextlib
-        import threading
-        from unittest.mock import patch
-
-        from scratch_monkey.container import PodmanError
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        done = threading.Event()
-        seen_at_poll: list[str] = []
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
-            patch.object(
-                AppModel, "poll_status", lambda self: seen_at_poll.append(self.status_message)
-            ),
-        ):
-            if target:
-                ctx = patch(
-                    f"scratch_monkey.gui.models.app.{target}", side_effect=PodmanError("podman broke")
-                )
-            else:
-                app._runner.stop.side_effect = PodmanError("podman broke")
-                ctx = contextlib.nullcontext()
-            with ctx:
-                getattr(app, method)("myinst")
-                _wait(done)
-
-        assert app.busy is False
-        assert app.status_message == expected
-        assert seen_at_poll == [expected]
-
-    def test_start_instance_not_found(self, tmp_path):
-        """start_instance sets error status for nonexistent instance."""
-        app, _, _ = self._make_app(tmp_path)
-
-        app.start_instance("nonexistent")
-        assert app.busy is False
-        assert "not found" in app.status_message
 
     def test_refresh_async(self, tmp_path):
-        """refresh_async uses _run_async to reload instances."""
+        """refresh_async uses run_async to reload instances."""
         import threading
-        from unittest.mock import patch
 
-        app, instances_dir, project_dir = self._make_app(tmp_path)
+        app, instances_dir, project_dir = make_app(tmp_path)
 
         done = threading.Event()
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
+        with sync_deferred_call(done):
             app.refresh_async()
-            _wait(done)
+            wait(done)
 
         assert app.busy is False
         assert "Loaded" in app.status_message
 
     def test_run_async_sets_status_message_immediately(self, tmp_path):
-        """_run_async sets status_message to the status param before the thread runs."""
+        """run_async sets status_message to the status param before the thread runs."""
         import threading
         from unittest.mock import patch
 
-        app, _, project_dir = self._make_app(tmp_path)
+        app, _, project_dir = make_app(tmp_path)
         observed_status = []
         done = threading.Event()
 
@@ -1462,17 +764,17 @@ class TestRunAsync:
             return None
 
         with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
-            app._run_async("Processing...", work, on_success=lambda r: done.set())
-            _wait(done)
+            app.run_async("Processing...", work, on_success=lambda r: done.set())
+            wait(done)
 
         assert observed_status == ["Processing..."]
 
     def test_run_async_busy_true_during_work(self, tmp_path):
-        """_run_async keeps busy=True while work() is running."""
+        """run_async keeps busy=True while work() is running."""
         import threading
         from unittest.mock import patch
 
-        app, _, project_dir = self._make_app(tmp_path)
+        app, _, project_dir = make_app(tmp_path)
         observed_busy = []
         done = threading.Event()
 
@@ -1481,332 +783,25 @@ class TestRunAsync:
             return None
 
         with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
-            app._run_async("Working...", work, on_success=lambda r: done.set())
-            _wait(done)
+            app.run_async("Working...", work, on_success=lambda r: done.set())
+            wait(done)
 
         assert observed_busy == [True]
         assert app.busy is False
 
-    def test_reset_overlay_not_found(self, tmp_path):
-        """reset_overlay returns early without setting busy for nonexistent instance."""
-        app, _, project_dir = self._make_app(tmp_path)
-
-        app.reset_overlay("nonexistent")
-        assert app.busy is False
-        assert "not found" in app.status_message
-
-    def test_reset_overlay_no_container(self, tmp_path):
-        """reset_overlay reports when no overlay container exists."""
-        import threading
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.app.overlay_reset", return_value=False),
-        ):
-            app.reset_overlay("myinst")
-            _wait(done)
-
-        assert app.busy is False
-        assert "No overlay container found" in app.status_message
-
-    def test_delete_instance_error_preserves_message(self, tmp_path):
-        """delete_instance on_error shows the error message (not overwritten by refresh)."""
-        import threading
-        from unittest.mock import patch
-
-        from scratch_monkey.instance import InstanceError
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.app.delete", side_effect=InstanceError("permission denied")),
-        ):
-            app.delete_instance("myinst")
-            _wait(done)
-
-        assert app.busy is False
-        assert "permission denied" in app.status_message
-
-    def test_reset_overlay_error_preserves_message(self, tmp_path):
-        """reset_overlay on_error calls poll_status (not refresh) and preserves error message."""
-        import threading
-        from unittest.mock import patch
-
-        from scratch_monkey.container import PodmanError
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        instances_before = app.instances
-
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.app.overlay_reset", side_effect=PodmanError("podman broke")),
-            # Don't start a real poll thread (it would outlive the test).
-            patch.object(AppModel, "poll_status") as poll,
-        ):
-            app.reset_overlay("myinst")
-            _wait(done)
-
-        assert app.busy is False
-        assert "podman broke" in app.status_message
-        poll.assert_called_once()
-        # Verify instances list was not replaced (poll_status, not refresh)
-        assert app.instances is instances_before
-
-    def test_refresh_overlay_success_uses_instance_image(self, tmp_path):
-        """refresh_overlay calls overlay.refresh with the instance tag when it exists."""
-        import threading
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        inst = next(i for i in app.instances if i.name == "myinst")
-        inst.overlay_running = False
-        instances_before = app.instances
-
-        app._runner.image_exists.return_value = True
-
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.app.overlay_refresh") as mock_refresh,
-        ):
-            app.refresh_overlay("myinst")
-            _wait(done)
-
-        mock_refresh.assert_called_once()
-        call_args = mock_refresh.call_args
-        # overlay.refresh(inst, runner, image) — image should be the instance tag
-        assert call_args[0][2] == "myinst"
-        # Preserve mode only: no discard kwarg passed as True
-        assert call_args.kwargs.get("discard", False) is False
-
-        assert app.busy is False
-        assert "Refreshed" in app.status_message
-        assert "myinst" in app.status_message
-        assert app.instances is instances_before
-        assert inst.overlay_running is True
-
-    def test_refresh_overlay_uses_base_image_when_not_built(self, tmp_path):
-        """refresh_overlay falls back to the detected/default base image when no instance tag exists."""
-        import threading
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        app._runner.image_exists.return_value = False
-
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.app.overlay_refresh") as mock_refresh,
-            patch("scratch_monkey.gui.models.app.detect_base_image", return_value=None),
-        ):
-            app.refresh_overlay("myinst")
-            _wait(done)
-
-        mock_refresh.assert_called_once()
-        call_args = mock_refresh.call_args
-        assert call_args[0][2] == DEFAULT_BASE_IMAGE
-
-    def test_refresh_overlay_not_found(self, tmp_path):
-        """refresh_overlay sets an error status for a nonexistent instance without going busy."""
-        app, _, _ = self._make_app(tmp_path)
-
-        app.refresh_overlay("nonexistent")
-        assert app.busy is False
-        assert "not found" in app.status_message
-
-    def test_refresh_overlay_error_preserves_message(self, tmp_path):
-        """refresh_overlay on_error calls poll_status (not refresh) and preserves the error."""
-        import threading
-        from unittest.mock import patch
-
-        from scratch_monkey.container import PodmanError
-
-        app, instances_dir, project_dir = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-
-        instances_before = app.instances
-
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
-            patch(
-                "scratch_monkey.gui.models.app.overlay_refresh",
-                side_effect=PodmanError("podman broke"),
-            ),
-            patch.object(AppModel, "poll_status") as poll,
-        ):
-            app.refresh_overlay("myinst")
-            _wait(done)
-
-        assert app.busy is False
-        assert "podman broke" in app.status_message
-        poll.assert_called_once()
-        # Verify instances list was not replaced (poll_status, not refresh)
-        assert app.instances is instances_before
-
-
-class TestDirectoryHelpers:
-    """Tests for _open_file_manager, _open_terminal_at, and AppModel methods."""
-
-    def _make_app(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-
-        instances_dir = tmp_path / "scratch-monkey"
-        instances_dir.mkdir()
-
-        runner = MagicMock()
-        runner.container_exists.return_value = False
-        runner.container_running.return_value = False
-        runner.image_exists.return_value = False
-
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            app = AppModel(instances_dir=instances_dir, runner=runner)
-
-        return app
-
-    def test_open_directory(self, tmp_path):
-        """open_directory calls xdg-open with the path."""
-        from unittest.mock import patch
-
-        app = self._make_app(tmp_path)
-
-        with (
-            patch("scratch_monkey.gui.desktop.shutil.which", return_value="/usr/bin/xdg-open"),
-            patch("scratch_monkey.gui.desktop.subprocess.Popen") as mock_popen,
-        ):
-            app.open_directory("/some/path")
-
-        mock_popen.assert_called_once_with(["xdg-open", "/some/path"])
-        assert "Opened file manager" in app.status_message
-
-    def test_open_directory_no_xdg_open(self, tmp_path):
-        """open_directory sets error status when xdg-open is not found."""
-        from unittest.mock import patch
-
-        app = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.desktop.shutil.which", return_value=None):
-            app.open_directory("/some/path")
-
-        assert "xdg-open not found" in app.status_message
-
-    def test_open_terminal(self, tmp_path):
-        """open_terminal launches terminal with correct cwd."""
-        from unittest.mock import patch
-
-        app = self._make_app(tmp_path)
-
-        with (
-            patch("scratch_monkey.gui.desktop._find_terminal", return_value=["xdg-terminal-exec"]),
-            patch("scratch_monkey.gui.desktop.subprocess.Popen") as mock_popen,
-        ):
-            app.open_terminal("/some/path")
-
-        mock_popen.assert_called_once_with(["xdg-terminal-exec"], cwd="/some/path")
-        assert "Opened terminal" in app.status_message
-
-    def test_open_terminal_no_terminal(self, tmp_path):
-        """open_terminal sets error status when no terminal is found."""
-        from unittest.mock import patch
-
-        app = self._make_app(tmp_path)
-
-        with patch("scratch_monkey.gui.desktop._find_terminal", return_value=[]):
-            app.open_terminal("/some/path")
-
-        assert "No terminal emulator found" in app.status_message
-
 
 class TestPollStatus:
     """Tests for AppModel.poll_status lightweight status poller."""
-
-    def _make_app(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-
-        instances_dir = tmp_path / "scratch-monkey"
-        instances_dir.mkdir()
-
-        runner = MagicMock()
-        runner.container_exists.return_value = False
-        runner.container_running.return_value = False
-        runner.image_exists.return_value = False
-
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            app = AppModel(instances_dir=instances_dir, runner=runner)
-
-        return app, instances_dir, project_dir, runner
 
     def test_poll_status_updates_overlay_running(self, tmp_path):
         """poll_status updates overlay_running in-place on existing instances."""
         import threading
         from unittest.mock import patch
 
-        app, instances_dir, project_dir, runner = self._make_app(tmp_path)
+        app, instances_dir, project_dir = make_app(tmp_path)
+        runner = app.runner
 
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.controllers.instances.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         inst = next(i for i in app.instances if i.name == "myinst")
@@ -1817,13 +812,9 @@ class TestPollStatus:
 
         done = threading.Event()
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
+        with sync_deferred_call(done):
             app.poll_status()
-            _wait(done)
+            wait(done)
 
         assert inst.overlay_running is True
         assert app.instances is instances_before
@@ -1834,9 +825,10 @@ class TestPollStatus:
         import threading
         from unittest.mock import patch
 
-        app, instances_dir, project_dir, runner = self._make_app(tmp_path)
+        app, instances_dir, project_dir = make_app(tmp_path)
+        runner = app.runner
 
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.controllers.instances.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         inst = next(i for i in app.instances if i.name == "myinst")
@@ -1846,20 +838,17 @@ class TestPollStatus:
 
         done = threading.Event()
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
+        with sync_deferred_call(done):
             app.poll_status()
-            _wait(done)
+            wait(done)
 
         assert inst.image_built is True
         assert app._polling is False
 
     def test_poll_status_skips_when_busy(self, tmp_path):
         """poll_status returns immediately if busy is True."""
-        app, _, _, runner = self._make_app(tmp_path)
+        app, _, _ = make_app(tmp_path)
+        runner = app.runner
         app.busy = True
 
         app.poll_status()
@@ -1868,7 +857,8 @@ class TestPollStatus:
 
     def test_poll_status_skips_when_already_polling(self, tmp_path):
         """poll_status returns immediately if _polling is True."""
-        app, _, _, runner = self._make_app(tmp_path)
+        app, _, _ = make_app(tmp_path)
+        runner = app.runner
         app._polling = True
 
         app.poll_status()
@@ -1880,9 +870,10 @@ class TestPollStatus:
         import threading
         from unittest.mock import patch
 
-        app, instances_dir, project_dir, runner = self._make_app(tmp_path)
+        app, instances_dir, project_dir = make_app(tmp_path)
+        runner = app.runner
 
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.controllers.instances.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         inst = next(i for i in app.instances if i.name == "myinst")
@@ -1894,13 +885,9 @@ class TestPollStatus:
 
         done = threading.Event()
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
+        with sync_deferred_call(done):
             app.poll_status()
-            _wait(done)
+            wait(done)
 
         assert inst.dirty is True
         assert inst.overlay_running is True
@@ -1910,22 +897,19 @@ class TestPollStatus:
         import threading
         from unittest.mock import patch
 
-        app, instances_dir, project_dir, runner = self._make_app(tmp_path)
+        app, instances_dir, project_dir = make_app(tmp_path)
+        runner = app.runner
 
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.controllers.instances.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         runner.container_running.side_effect = RuntimeError("podman down")
 
         done = threading.Event()
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
+        with sync_deferred_call(done):
             app.poll_status()
-            _wait(done)
+            wait(done)
 
         assert app._polling is False
 
@@ -2064,17 +1048,12 @@ class TestInitialLoad:
 
     def _sync_call(self, app_call):
         import threading
-        from unittest.mock import patch
 
         done = threading.Event()
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
+        with sync_deferred_call(done):
             app_call()
-            _wait(done)
+            wait(done)
 
     def test_init_makes_no_podman_calls(self, tmp_path):
         from unittest.mock import MagicMock
@@ -2206,17 +1185,12 @@ class TestPollStatusErrors:
 
     def _sync_call(self, app_call):
         import threading
-        from unittest.mock import patch
 
         done = threading.Event()
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
+        with sync_deferred_call(done):
             app_call()
-            _wait(done)
+            wait(done)
 
     def _loaded(self, tmp_path, names=("alpha", "beta", "gamma"), stuck=()):
         """An app whose initial load saw `stuck` instances' overlay queries time out."""
@@ -2338,366 +1312,27 @@ class TestPollStatusErrors:
 
 # ── dialog-facing actions: on_done callbacks, worker-thread execution ───────
 
-def _wait_for(cond, what="condition", timeout=5.0):
-    import time
-
-    deadline = time.monotonic() + timeout
-    while not cond():
-        assert time.monotonic() < deadline, f"timed out waiting for {what}"
-        time.sleep(0.01)
-
-
-def _make_dialog_app(tmp_path):
-    from unittest.mock import MagicMock, patch
-
-    instances_dir = tmp_path / "scratch-monkey"
-    instances_dir.mkdir()
-    runner = MagicMock()
-    runner.container_exists.return_value = False
-    runner.container_running.return_value = False
-    runner.image_exists.return_value = False
-    project_dir = tmp_path / "project"
-    project_dir.mkdir()
-    with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-        app = AppModel(instances_dir=instances_dir, runner=runner)
-    return app, instances_dir, project_dir
-
-
-def _resolve(dotted):
-    import importlib
-
-    mod, attr = dotted.rsplit(".", 1)
-    return getattr(importlib.import_module(mod), attr)
-
 
 # Per action: instances to create first, initial selection, how to invoke it, which
 # function does the real work (patched to spy on the thread), a call that fails, and
 # the expected end state.
-_DIALOG_CASES = {
-    "rename": dict(
-        setup=["old"],
-        select="old",
-        invoke=lambda app, cb: app.rename_instance("old", "new", cb),
-        patch_target="scratch_monkey.gui.models.app.rename",
-        fail=lambda app, cb: app.rename_instance("nonexistent", "whatever", cb),
-        selected_after="new",
-        names_after={"new"},
-        status="Renamed 'old' to 'new'",
-    ),
-    "clone": dict(
-        setup=["src"],
-        select="src",
-        invoke=lambda app, cb: app.clone_instance("src", "dest", cb),
-        patch_target="scratch_monkey.gui.models.app.clone",
-        fail=lambda app, cb: app.clone_instance("src", "src", cb),
-        selected_after="dest",
-        names_after={"src", "dest"},
-        status="Cloned 'src' to 'dest'",
-    ),
-    "create": dict(
-        setup=["existing"],
-        select="existing",
-        invoke=lambda app, cb: app.create_instance("fresh", cb),
-        patch_target="scratch_monkey.gui.models.app.create",
-        fail=lambda app, cb: app.create_instance("existing", cb),
-        selected_after="fresh",
-        names_after={"existing", "fresh"},
-        status="Created instance 'fresh'",
-    ),
-    "shared": dict(
-        setup=["existing"],
-        select="existing",
-        invoke=lambda app, cb: app.create_shared_volume("vol", cb),
-        patch_target="scratch_monkey.shared.create_shared",
-        fail=lambda app, cb: app.create_shared_volume("bad name!", cb),
-        selected_after="existing",
-        names_after={"existing"},
-        status="Created shared volume 'vol'",
-    ),
-}
-
-
-@pytest.mark.parametrize("case_id", list(_DIALOG_CASES))
-class TestDialogActions:
-    """rename/clone/create/create_shared_volume: on_done callbacks via _run_async."""
-
-    def _app(self, tmp_path, case):
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = _make_dialog_app(tmp_path)
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            for name in case["setup"]:
-                assert create_sync(app, name) == ""
-        app.selected_instance = case["select"]
-        return app, instances_dir, project_dir
-
-    def _run(self, app, invoke):
-        # call_sync passes on_done as the last positional argument
-        return call_sync(lambda on_done: invoke(app, on_done))
-
-    def test_success(self, tmp_path, case_id):
-        from unittest.mock import patch
-
-        case = _DIALOG_CASES[case_id]
-        app, instances_dir, project_dir = self._app(tmp_path, case)
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            err = self._run(app, case["invoke"])
-
-        assert err == ""
-        assert app.busy is False
-        assert {i.name for i in app.instances} == case["names_after"]
-        assert app.selected_instance == case["selected_after"]
-        assert app.status_message == case["status"]
-        assert app.error_message == ""
-        if case_id == "shared":
-            assert "vol" in app.available_shared
-
-    def test_error_reaches_callback_not_banner(self, tmp_path, case_id):
-        from unittest.mock import patch
-
-        case = _DIALOG_CASES[case_id]
-        app, instances_dir, project_dir = self._app(tmp_path, case)
-        before = {i.name for i in app.instances}
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            err = self._run(app, case["fail"])
-
-        assert err != ""
-        assert app.busy is False
-        assert app.selected_instance == case["select"]  # unchanged
-        assert {i.name for i in app.instances} == before
-        # The dialog shows the error; the banner must not duplicate it.
-        assert app.error_message == ""
-        assert app.status_message == f"Error: {err}"
-
-    def test_busy_rejection_still_calls_back(self, tmp_path, case_id):
-        from unittest.mock import patch
-
-        case = _DIALOG_CASES[case_id]
-        app, instances_dir, project_dir = self._app(tmp_path, case)
-        app.busy = True
-        app._busy_status = "Starting 'x'..."
-        calls = []
-
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            case["invoke"](app, calls.append)
-
-        assert len(calls) == 1
-        assert calls[0].startswith("Busy")
-        assert app.busy is True  # the other operation is untouched
-        assert {i.name for i in app.instances} == set(case["setup"])
-        assert app.selected_instance == case["select"]
-
-    def test_work_and_reload_run_off_gui_thread(self, tmp_path, case_id):
-        """The action and the list reload run in the worker; the caller returns at once."""
-        import threading
-        from unittest.mock import patch
-
-        import scratch_monkey.gui.models.app as models
-
-        case = _DIALOG_CASES[case_id]
-        app, instances_dir, project_dir = self._app(tmp_path, case)
-        gui_thread = threading.current_thread()
-        gate = threading.Event()
-        threads = {}
-        real_target = _resolve(case["patch_target"])
-        real_list_all = models.list_all
-
-        def spy_action(*a, **kw):
-            threads["action"] = threading.current_thread()
-            assert gate.wait(timeout=5)
-            return real_target(*a, **kw)
-
-        def spy_list_all(*a, **kw):
-            threads["list_all"] = threading.current_thread()
-            return real_list_all(*a, **kw)
-
-        done = threading.Event()
-        results = []
-
-        def on_done(err):
-            results.append(err)
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir),
-            patch(case["patch_target"], side_effect=spy_action),
-            patch("scratch_monkey.gui.models.app.list_all", side_effect=spy_list_all),
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()),
-        ):
-            case["invoke"](app, on_done)
-            # Returned while the action is still blocked: the GUI thread is not held.
-            assert results == []
-            assert app.busy is True
-            gate.set()
-            _wait(done)
-
-        assert results == [""]
-        assert threads["action"] is not gui_thread
-        assert threads["list_all"] is not gui_thread
-
-
-class TestDeleteReload:
-    def test_delete_error_reloads_list_in_worker_and_keeps_banner(self, tmp_path):
-        import threading
-        from unittest.mock import patch
-
-        import scratch_monkey.gui.models.app as models
-        from scratch_monkey.instance import InstanceError
-
-        app, instances_dir, project_dir = _make_dialog_app(tmp_path)
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "keep")
-        app.selected_instance = "keep"
-        gui_thread = threading.current_thread()
-        threads = []
-        real = models.list_all
-
-        def spy(*a, **kw):
-            threads.append(threading.current_thread())
-            return real(*a, **kw)
-
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.app.delete", side_effect=InstanceError("nope")),
-            patch("scratch_monkey.gui.models.app.list_all", side_effect=spy),
-        ):
-            app.delete_instance("keep")
-            _wait(done)
-
-        assert threads and all(t is not gui_thread for t in threads)
-        assert app.error_message == "nope"  # banner (no dialog for delete)
-        assert app.status_message == "Error: nope"
-        assert app.selected_instance == "keep"  # failed delete keeps the selection
-        assert app.busy is False
-
-    def test_delete_busy_does_not_raise(self, tmp_path):
-        app, _, _ = _make_dialog_app(tmp_path)
-        app.busy = True
-        app.delete_instance("whatever")  # no on_done; just reports busy
-        assert app.status_message.startswith("Busy")
 
 
 class TestRunAsyncReturnValue:
     def test_returns_true_when_started_false_when_busy(self, tmp_path):
         import threading
-        from unittest.mock import patch
 
-        app, _, _ = _make_dialog_app(tmp_path)
+        app, _, _ = make_app(tmp_path)
         done = threading.Event()
 
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
-            assert app._run_async("go", lambda: None) is True
-            _wait(done)
+        with sync_deferred_call(done):
+            assert app.run_async("go", lambda: None) is True
+            wait(done)
         app.busy = True
-        assert app._run_async("again", lambda: None) is False
+        assert app.run_async("again", lambda: None) is False
 
     def test_blocking_refresh_is_gone(self):
         assert not hasattr(AppModel, "refresh")
-
-
-class TestEditConfigReload:
-    def _edit(self, app, name):
-        from unittest.mock import MagicMock, patch
-
-        with (
-            patch("scratch_monkey.gui.models.app._find_terminal", return_value=["term"]),
-            patch("scratch_monkey.gui.models.app.subprocess.Popen", return_value=MagicMock()),
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()),
-        ):
-            app.edit_config(name)
-
-    def test_reload_after_editor_runs_in_background(self, tmp_path):
-        import threading
-        from unittest.mock import patch
-
-        import scratch_monkey.gui.models.app as models
-
-        app, instances_dir, project_dir = _make_dialog_app(tmp_path)
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-        app.selected_instance = "myinst"
-        gui_thread = threading.current_thread()
-        threads = []
-        real = models.list_all
-
-        def spy(*a, **kw):
-            threads.append(threading.current_thread())
-            return real(*a, **kw)
-
-        with (
-            patch("scratch_monkey.gui.models.app.list_all", side_effect=spy),
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()),
-        ):
-            self._edit(app, "myinst")
-            _wait_for(lambda: app.status_message == "Reloaded config for 'myinst'", "reload")
-
-        assert threads and all(t is not gui_thread for t in threads)
-        assert app.busy is False
-
-    def test_reload_deferred_while_busy(self, tmp_path):
-        import threading
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = _make_dialog_app(tmp_path)
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-        gate = threading.Event()
-
-        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
-            assert app._run_async("Other op", lambda: gate.wait(timeout=5))
-            self._edit(app, "myinst")
-            _wait_for(lambda: app._reload_pending, "reload to be queued")
-            gate.set()
-            _wait_for(lambda: app.status_message == "Reloaded config for 'myinst'", "deferred reload")
-
-        assert app._reload_pending == ""
-        assert app.busy is False
-
-
-class TestImageLookupOffGuiThread:
-    @pytest.mark.parametrize("method", ["start_instance", "refresh_overlay"])
-    def test_image_exists_runs_in_worker(self, tmp_path, method):
-        import threading
-        from unittest.mock import patch
-
-        app, instances_dir, project_dir = _make_dialog_app(tmp_path)
-        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
-            create_sync(app, "myinst")
-        gui_thread = threading.current_thread()
-        threads = []
-
-        def image_exists(name):
-            threads.append(threading.current_thread())
-            return False
-
-        app._runner.image_exists.side_effect = image_exists
-        done = threading.Event()
-
-        def sync_deferred_call(fn):
-            fn()
-            done.set()
-
-        with (
-            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.app.overlay_ensure_running"),
-            patch("scratch_monkey.gui.models.app.overlay_refresh"),
-        ):
-            getattr(app, method)("myinst")
-            _wait(done)
-
-        assert threads and all(t is not gui_thread for t in threads)
 
 
 class TestDialogHelpers:

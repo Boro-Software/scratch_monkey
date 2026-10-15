@@ -63,7 +63,7 @@ enamldef CreateInstanceDialog(Dialog): dlg:
                     clicked ::
                         cfg = dlg.instance_model.to_config() if dlg.instance_model else None
                         start_working(dlg)
-                        app_model.create_instance(
+                        app_model.instance_actions.create(
                             name_field.text.strip(),
                             make_on_done(dlg),
                             fedora=fedora_cb.checked,
