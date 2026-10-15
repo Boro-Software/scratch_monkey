@@ -10,6 +10,7 @@ from .config import generate_overlay_id, save
 from .container import PodmanError, PodmanRunner
 from .instance import Instance, is_fedora_based
 from .mountpoints import prepare_mountpoints, removed_outside_home_targets
+from .overlay_mounts import ensure_overlay_dirs
 from .run_args import build_run_args, container_home_path
 
 logger = logging.getLogger(__name__)
@@ -42,8 +43,16 @@ def ensure_running(
     """
     container_name = _ensure_overlay_id(instance)
 
-    if not runner.container_exists(container_name):
+    exists = runner.container_exists(container_name)
+
+    # Overlay-mode volumes need their upper/work directories to exist before
+    # the container is created *and* before an existing one is started
+    # (podman start fails on a missing upperdir).
+    dir_warnings = ensure_overlay_dirs(instance)
+
+    if not exists:
         run_args, warnings = build_run_args(instance)
+        warnings += dir_warnings
         # Create home-relative mount points as the current user *before* the
         # runtime does it as container root (a subuid-owned stub on the host).
         warnings += prepare_mountpoints(instance, run_args, container_home_path())
@@ -62,8 +71,11 @@ def ensure_running(
                 podman=instance.config.podman,
             )
 
-    elif not runner.container_running(container_name):
-        runner.start(container_name)
+    else:
+        for w in dir_warnings:
+            print(f"Warning: {w}", file=sys.stderr)
+        if not runner.container_running(container_name):
+            runner.start(container_name)
 
     return container_name
 

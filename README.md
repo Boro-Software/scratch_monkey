@@ -116,7 +116,7 @@ All fields are optional — commented-out defaults are shown when an instance is
 | `ssh` | bool | `false` | Forward `SSH_AUTH_SOCK` for SSH agent access |
 | `podman` | bool | `false` | Share the host's rootless podman socket (see [Podman access](#podman-access-inside-instances); **grants host-level container access**) |
 | `home` | string | `""` | Override the instance `home/` dir with a custom path |
-| `volumes` | list | `[]` | Extra volume mounts (`host:container:mode`) |
+| `volumes` | list | `[]` | Extra volume mounts (`host:container:mode`; mode is `ro`, `rw` or `overlay`, see [Overlay volumes](#overlay-volumes)) |
 | `env` | list | `[]` | Extra environment variables (`KEY=value`) |
 | `shared` | list | `[]` | Shared volume names (mounted at `/shared/<name>`; append `:ro` for read-only) |
 | `overlay` | bool | `false` | Enable overlay mode (persistent writable layer) |
@@ -184,6 +184,28 @@ By default, `refresh` commits the container's writable layer (e.g. anything inst
 Each preserving `refresh` adds one more layer to the instance's image, since it's committed on top of whatever was there before. Repeated refreshes will grow the image over time — rebuild the instance image (`build-instance`) for a clean slate.
 
 > **Root entry:** `--root` sets the workdir to `/root`. Scratch images don't create `/root`, so scratch-monkey handles it automatically: in non-overlay mode, `/root` is a tmpfs mount; in overlay mode, `/root` is created in the container's writable layer on first root entry and persists across restarts.
+
+### Overlay volumes
+
+A volume with mode `ro` is safe but tools inside the container sometimes need to write settings there. Mode `overlay` gives the container a writable view of a host directory while the host original is never modified:
+
+```toml
+volumes = ["/home/me/.config/foo:/home/me/.config/foo:overlay"]
+```
+
+The host directory is the read-only lower layer; container-side changes go to a per-instance directory, `<instance>/.overlays/<mount-id>/{upper,work}`. They persist across container restarts and `refresh`, and are specific to the container path (the `<mount-id>` is derived from it, so changing the host path keeps your changes). scratch-monkey creates these directories as your user before creating or starting the container. Files written by container root there are owned by a subuid on the host.
+
+To discard container-side changes and see the host originals again:
+
+```bash
+scratch-monkey reset-overlays myproject                          # every overlay of the instance (asks first)
+scratch-monkey reset-overlays myproject --mount /home/me/.config/foo
+scratch-monkey reset-overlays myproject --yes                    # skip the confirmation
+```
+
+Without `--mount` this also resets leftovers of mounts that are no longer in `scratch.toml`. A running overlay container is stopped first and left stopped; the next `enter` or `start` brings it back. Shared volumes only support `ro` and `rw`.
+
+`scratch-monkey delete` removes subuid-owned files (overlay changes, mount-point stubs) with `podman unshare rm -rf` when a plain delete is not permitted.
 
 ### Mount points inside the home
 
@@ -345,9 +367,9 @@ The GUI provides:
 - Instance list with start/stop toggle buttons and image/overlay status
 - Quick-open buttons to open instance path or home directory in a file manager or terminal
 - Configuration editing (cmd, wayland, ssh, podman, home, overlay, GPU passthrough)
-- Volume mount management (add/remove host:container mounts, set ro/rw mode; defaults to ro)
+- Volume mount management (add/remove host:container mounts, set ro/rw/overlay mode; defaults to ro)
 - Environment variable, device, and shared volume management
-- Action buttons (enter, enter as root, build, refresh overlay, reset overlay, export cmd, edit files)
+- Action buttons (enter, enter as root, build, refresh overlay, reset overlay, reset overlay mounts, export cmd, edit files)
 - Live status polling with in-place overlay/image status updates
 - While an operation (start/stop/refresh/reset overlay, etc.) is running, the instance list and detail panels are disabled and a progress indicator shows in the status bar; failures appear both in the status bar and in a red banner at the top of the window; rename, clone, create-instance and create-shared-volume dialogs show "Working..." and lock themselves until the background operation finishes, and report errors inline
 
@@ -421,6 +443,7 @@ Fedora instances use their own filesystem — no host system mounts.
 | `stop <name>` | Stop overlay container |
 | `reset <name>` | Remove overlay container (`--yes` to skip confirm) |
 | `refresh <name>` | Recreate overlay container, preserving installs (`--discard` for clean slate) |
+| `reset-overlays <name>` | Discard container-side changes to `overlay`-mode volumes (`--mount CONTAINER_PATH`, `--yes`) |
 | `prune-mountpoints <name>` / `--all` | Remove stale subuid-owned empty mount-point dirs from an instance home (`--yes` to skip confirm) |
 | `export <name> <cmd> [bin]` | Export a command to `~/.local/bin` |
 | `unexport <bin>` | Remove an exported command |

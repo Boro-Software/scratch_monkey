@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import ConfigError, validate_volume_spec
 from .instance import Instance, is_fedora_based
+from .overlay_mounts import translate_volume
 from .shared import parse_shared_entry
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -194,7 +195,12 @@ def build_run_args(
         except ConfigError:
             warnings.append(f"Skipping invalid volume spec {vol!r}: empty host or container path.")
             continue
-        args += ["-v", vol]
+        try:
+            # ``overlay`` mode becomes a podman overlay mount with a per-instance
+            # upper/work pair; every other spec passes through unchanged.
+            args += ["-v", translate_volume(vol, instance.directory)]
+        except ConfigError as exc:
+            warnings.append(f"Skipping volume {vol!r}: {exc}")
 
     # Shared volumes
     instances_dir = instance.directory.parent

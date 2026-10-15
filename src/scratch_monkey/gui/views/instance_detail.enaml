@@ -159,6 +159,19 @@ enamldef InstanceDetailPanel(Container): panel:
                                     tool_tip = "Export a command from this instance to ~/.local/bin"
 
                                 PushButton:
+                                    text = "Reset Mounts"
+                                    clicked ::
+                                        result = question(
+                                            panel,
+                                            "Reset Overlay Mounts",
+                                            f"Discard all container-side changes to overlay-mode volumes of '{app_model.selected_instance}'? A running overlay container will be stopped.",
+                                            [DialogButton('Reset', 'accept'), DialogButton('Cancel', 'reject')],
+                                        )
+                                        if result is not None and result.action == 'accept':
+                                            app_model.overlays.reset_overlay_data(app_model.selected_instance)
+                                    tool_tip = "Discard changes made inside the container to volumes mounted in overlay mode"
+
+                                PushButton:
                                     text = "Edit Dockerfile"
                                     clicked ::
                                         app_model.tools.edit_file(app_model.selected_instance, "dockerfile")
