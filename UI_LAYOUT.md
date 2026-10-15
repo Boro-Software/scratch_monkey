@@ -20,6 +20,45 @@ HGroup:
 Without `align_widths = False`, the equal-width constraint fights with `minimum_size`/`maximum_size`
 on the button and the layout breaks.
 
+## Paired fields share width: use a Container with an equality constraint
+
+Two stretchy `Field`s (`hug_width = 'ignore'`) in an `HGroup` with `align_widths = False`
+have no relationship to each other, so the solver may give nearly all the width to one and
+squeeze the other (this happened to the host/container path fields of the volume mount
+rows). `align_widths = True` is not an option because it also equalizes the combo/button.
+
+**Pattern** (from config_editor.enaml, volume mount rows): use a `Container` with explicit
+constraints, name the children, and pin only the fields to each other:
+```
+from enaml.layout.api import hbox
+
+Container:
+    padding = 0
+    constraints = [
+        hbox(host_field, container_field, mode_combo, remove_btn),
+        host_field.width == container_field.width,
+    ]
+    Field: host_field:
+        hug_width = 'ignore'
+        minimum_size = (150, 0)      # neither field may collapse
+    Field: container_field:
+        hug_width = 'ignore'
+        minimum_size = (150, 0)
+    ObjectCombo: mode_combo:         # keeps its natural size
+    PushButton: remove_btn:
+        minimum_size = (30, 0)
+        maximum_size = (30, 16777215)
+```
+For an uneven split use e.g. `host_field.width == 1.2 * container_field.width`.
+Rows whose second child is a fixed-size button (single Field, or KEY/value with a capped
+key) do not need this.
+
+## Dialog default size
+
+Set `initial_size` on the `Dialog` (e.g. `initial_size = (760, 0)` in
+`CreateInstanceDialog`); a `0` dimension lets Qt use the content's size hint, and the dialog
+stays resizable. Keep the width under ~1000px so it fits a 1366px-wide screen.
+
 ## Disabling UI during async operations
 
 Setting `enabled = False` on a container (e.g. Splitter) disables all children recursively (Qt propagation).

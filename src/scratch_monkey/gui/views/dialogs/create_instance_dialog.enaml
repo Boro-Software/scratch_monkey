@@ -13,6 +13,7 @@ enamldef CreateInstanceDialog(Dialog): dlg:
     attr working : bool = False
 
     title = "Create Instance"
+    initial_size = (760, 0)   # wide enough for comfortable path entry; still resizable
 
     closing ::
         # Don't let the user dismiss the dialog while the action is in flight.
