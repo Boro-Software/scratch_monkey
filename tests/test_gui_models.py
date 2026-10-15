@@ -396,6 +396,7 @@ class TestGUISmoke:
                 main_window,  # noqa: F401
             )
             from scratch_monkey.gui.views.dialogs import (
+                banner_details_dialog,  # noqa: F401
                 clone_dialog,  # noqa: F401
                 create_instance_dialog,  # noqa: F401
                 create_shared_dialog,  # noqa: F401

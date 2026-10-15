@@ -6,7 +6,8 @@ with enaml.imports():
 from enaml.stdlib.dialog_buttons import DialogButton
 
 from enaml.widgets.api import (
-    MainWindow, Container, Label, ToolBar, Action, Splitter, SplitItem, ProgressBar, HGroup
+    MainWindow, Container, Label, ToolBar, Action, Splitter, SplitItem, ProgressBar, HGroup,
+    PushButton
 )
 from enaml.layout.api import vbox, hbox
 from enaml.styling import StyleSheet, Style, Setter
@@ -14,6 +15,7 @@ from enaml.styling import StyleSheet, Style, Setter
 from scratch_monkey.gui.views.instance_list import InstanceListPanel
 from scratch_monkey.gui.views.instance_detail import InstanceDetailPanel
 from scratch_monkey.gui.views.dialogs.create_instance_dialog import CreateInstanceDialog
+from scratch_monkey.gui.views.dialogs.banner_details_dialog import BannerDetailsDialog
 
 
 enamldef ScratchMonkeyWindow(MainWindow): win:
@@ -32,6 +34,14 @@ enamldef ScratchMonkeyWindow(MainWindow): win:
             Setter:
                 field = "color"
                 value = "#ffffff"
+        Style:
+            style_class = "warning-banner"
+            Setter:
+                field = "background"
+                value = "#ffb300"
+            Setter:
+                field = "color"
+                value = "#212121"
 
     closing ::
         if app_model.has_unsaved_changes():
@@ -69,17 +79,41 @@ enamldef ScratchMonkeyWindow(MainWindow): win:
             # function of state rather than left to implicit hidden-widget
             # sizing, or toggling it can make the constraint solver resize
             # the Splitter unpredictably. Here we pin the height explicitly
-            # to 0 when there's no error and to 28 when there is, instead of
+            # to 0 when there's no message and to 32 when there is, instead of
             # relying on `visible` alone to collapse it.
+            #
+            # It shows one message at a time (app_model.banner_*): an error
+            # (red) wins over a warning (amber). The label holds a single
+            # elided line; "Details" (only when text was cut) opens the full
+            # text, and the X button dismisses the message being shown.
             align_widths = False
             padding = 4
             trailing_spacer = None
-            visible << bool(app_model.error_message)
-            minimum_size << (0, 28) if app_model.error_message else (0, 0)
-            maximum_size << (16777215, 28) if app_model.error_message else (16777215, 0)
-            Label:
-                text << app_model.error_message
-                style_class = "error-banner"
+            visible << bool(app_model.banner_level)
+            minimum_size << (0, 32) if app_model.banner_level else (0, 0)
+            maximum_size << (16777215, 32) if app_model.banner_level else (16777215, 0)
+            Label: banner_label:
+                text << app_model.banner_summary
+                style_class << "error-banner" if app_model.banner_level == "error" else "warning-banner"
+                hug_width = 'ignore'
+            PushButton: details_btn:
+                text = "Details"
+                visible << app_model.banner_truncated
+                minimum_size = (70, 0)
+                maximum_size = (70, 24)
+                clicked ::
+                    dlg = BannerDetailsDialog(
+                        win,
+                        text=app_model.banner_text,
+                        level=app_model.banner_level,
+                    )
+                    dlg.exec_()
+            PushButton: dismiss_btn:
+                text = "\u2715"
+                tool_tip = "Dismiss"
+                minimum_size = (30, 0)
+                maximum_size = (30, 24)
+                clicked :: app_model.dismiss_banner()
 
         Splitter: splitter:
             enabled << not app_model.busy
