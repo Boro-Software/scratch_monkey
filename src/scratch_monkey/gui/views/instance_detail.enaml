@@ -64,7 +64,7 @@ enamldef InstanceDetailPanel(Container): panel:
                             maximum_size = (30, 16777215)
                             clicked ::
                                 if app_model.selected:
-                                    app_model.open_directory(app_model.selected.directory)
+                                    app_model.tools.open_directory(app_model.selected.directory)
                             tool_tip = "Open instance directory in file manager"
                         PushButton:
                             text = "\u2318"
@@ -72,7 +72,7 @@ enamldef InstanceDetailPanel(Container): panel:
                             maximum_size = (30, 16777215)
                             clicked ::
                                 if app_model.selected:
-                                    app_model.open_terminal(app_model.selected.directory)
+                                    app_model.tools.open_terminal(app_model.selected.directory)
                             tool_tip = "Open terminal in instance directory"
                         Label:
                             text << f"Path: {app_model.selected.directory}" if app_model.selected else "Path: \u2014"
@@ -88,7 +88,7 @@ enamldef InstanceDetailPanel(Container): panel:
                             clicked ::
                                 if app_model.selected:
                                     home = app_model.selected.home if app_model.selected.home else f"{app_model.selected.directory}/home"
-                                    app_model.open_directory(home)
+                                    app_model.tools.open_directory(home)
                             tool_tip = "Open home directory in file manager"
                         PushButton:
                             text = "\u2318"
@@ -97,7 +97,7 @@ enamldef InstanceDetailPanel(Container): panel:
                             clicked ::
                                 if app_model.selected:
                                     home = app_model.selected.home if app_model.selected.home else f"{app_model.selected.directory}/home"
-                                    app_model.open_terminal(home)
+                                    app_model.tools.open_terminal(home)
                             tool_tip = "Open terminal in home directory"
                         Label:
                             text << (f"Home: {app_model.selected.home}" if app_model.selected and app_model.selected.home else f"Home: {app_model.selected.directory}/home" if app_model.selected else "Home: \u2014")
@@ -111,25 +111,25 @@ enamldef InstanceDetailPanel(Container): panel:
                                 PushButton:
                                     text = "Enter"
                                     clicked ::
-                                        app_model.enter_instance(app_model.selected_instance)
+                                        app_model.overlays.enter(app_model.selected_instance)
                                     tool_tip = "Open a shell in this instance"
 
                                 PushButton:
                                     text = "Enter as Root"
                                     clicked ::
-                                        app_model.enter_instance(app_model.selected_instance, root=True)
+                                        app_model.overlays.enter(app_model.selected_instance, root=True)
                                     tool_tip = "Open a root shell in this instance"
 
                                 PushButton:
                                     text = "Build"
                                     clicked ::
-                                        app_model.build_instance(app_model.selected_instance)
+                                        app_model.overlays.build(app_model.selected_instance)
                                     tool_tip = "Build the container image for this instance"
 
                                 PushButton:
                                     text = "Refresh Overlay"
                                     clicked ::
-                                        app_model.refresh_overlay(app_model.selected_instance)
+                                        app_model.overlays.refresh(app_model.selected_instance)
                                     tool_tip = (
                                         "Recreate the overlay container with current settings, "
                                         "preserving installed software"
@@ -145,7 +145,7 @@ enamldef InstanceDetailPanel(Container): panel:
                                             [DialogButton('Reset', 'accept'), DialogButton('Cancel', 'reject')],
                                         )
                                         if result is not None and result.action == 'accept':
-                                            app_model.reset_overlay(app_model.selected_instance)
+                                            app_model.overlays.reset(app_model.selected_instance)
                                     tool_tip = "Remove the overlay container and discard its changes"
 
                             HGroup:
@@ -161,19 +161,19 @@ enamldef InstanceDetailPanel(Container): panel:
                                 PushButton:
                                     text = "Edit Dockerfile"
                                     clicked ::
-                                        app_model.edit_file(app_model.selected_instance, "dockerfile")
+                                        app_model.tools.edit_file(app_model.selected_instance, "dockerfile")
                                     tool_tip = "Open the Dockerfile in your editor ($VISUAL/$EDITOR)"
 
                                 PushButton:
                                     text = "Edit .env"
                                     clicked ::
-                                        app_model.edit_file(app_model.selected_instance, "env")
+                                        app_model.tools.edit_file(app_model.selected_instance, "env")
                                     tool_tip = "Open the .env file in your editor ($VISUAL/$EDITOR)"
 
                                 PushButton:
                                     text = "Edit Config"
                                     clicked ::
-                                        app_model.edit_config(app_model.selected_instance)
+                                        app_model.tools.edit_config(app_model.selected_instance)
                                     tool_tip = "Edit scratch.toml in your editor; config reloads when editor closes"
 
                     HGroup:

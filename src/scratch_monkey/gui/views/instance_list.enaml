@@ -60,9 +60,9 @@ enamldef InstanceListPanel(Container): panel:
                         maximum_size = (24, 16777215)
                         toggled ::
                             if checked and not inst.overlay_running:
-                                app_model.start_instance(inst.name)
+                                app_model.overlays.start(inst.name)
                             elif not checked and inst.overlay_running:
-                                app_model.stop_instance(inst.name)
+                                app_model.overlays.stop(inst.name)
                     Label:
                         text << ("F" if "fedora" in (inst.base_image or "").lower() else "\u2013")
                         tool_tip << (inst.base_image if inst.base_image and "fedora" in inst.base_image.lower() else "Scratch")
@@ -117,7 +117,7 @@ enamldef InstanceListPanel(Container): panel:
                                 [DialogButton('Delete', 'accept'), DialogButton('Cancel', 'reject')],
                             )
                             if result is not None and result.action == 'accept':
-                                app_model.delete_instance(inst.name)
+                                app_model.instance_actions.delete(inst.name)
 
     PushButton: new_btn:
         text = "+ New Instance"
