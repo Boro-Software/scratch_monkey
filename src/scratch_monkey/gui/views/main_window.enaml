@@ -13,7 +13,7 @@ from enaml.styling import StyleSheet, Style, Setter
 
 from scratch_monkey.gui.views.instance_list import InstanceListPanel
 from scratch_monkey.gui.views.instance_detail import InstanceDetailPanel
-from scratch_monkey.gui.views.create_dialog import CreateInstanceDialog
+from scratch_monkey.gui.views.dialogs.create_instance_dialog import CreateInstanceDialog
 
 
 enamldef ScratchMonkeyWindow(MainWindow): win:

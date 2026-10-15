@@ -1,0 +1,47 @@
+"""Export Command dialog for scratch-monkey GUI."""
+
+from enaml.widgets.api import Container, Dialog, Field, HGroup, Label, PushButton, VGroup
+
+
+enamldef ExportDialog(Dialog): dlg:
+    attr app_model
+    attr instance_name : str = ""
+    attr _error_msg : str = ""
+
+    title = "Export Command"
+
+    Container:
+        VGroup:
+            Label:
+                text << f"Export a command from '{dlg.instance_name}':"
+            Label:
+                text = "Command path (e.g. /usr/bin/rg):"
+            Field: cmd_field:
+                placeholder = "/usr/bin/app"
+                submit_triggers = ['lost_focus', 'return_pressed', 'auto_sync']
+            Label:
+                text = "Binary name (leave blank to use command basename):"
+            Field: bin_field:
+                placeholder = ""
+                submit_triggers = ['lost_focus', 'return_pressed', 'auto_sync']
+            Label:
+                text << dlg._error_msg
+                visible << bool(dlg._error_msg)
+            HGroup:
+                padding = 0
+                PushButton:
+                    text = "Export"
+                    enabled << bool(cmd_field.text.strip())
+                    clicked ::
+                        err = dlg.app_model.export_command(
+                            dlg.instance_name,
+                            cmd_field.text.strip(),
+                            bin_field.text.strip(),
+                        )
+                        if err:
+                            dlg._error_msg = err
+                        else:
+                            dlg.close()
+                PushButton:
+                    text = "Cancel"
+                    clicked :: dlg.close()

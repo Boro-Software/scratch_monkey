@@ -1,16 +1,15 @@
-"""Atom-based observable models for the scratch-monkey GUI."""
+"""Root application model for the scratch-monkey GUI."""
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import threading
 from collections.abc import Callable
 from pathlib import Path
 
 try:
-    from atom.api import Atom, Bool, List, Str, Value, observe
+    from atom.api import Atom, Bool, List, Str, Value
 except ImportError:
     raise ImportError(
         "The GUI requires the 'enaml' package. "
@@ -22,28 +21,36 @@ try:
 except ImportError:
     def deferred_call(fn): fn()  # fallback for tests without enaml app
 
-from ..config import InstanceConfig, save
-from ..container import PodmanRunner
-from ..export import ExportError
-from ..export import export_command as export_command_fn
-from ..instance import (
+from ...config import InstanceConfig, save
+from ...container import PodmanRunner
+from ...export import ExportError
+from ...export import export_command as export_command_fn
+from ...instance import (
     Instance,
     InstanceInfo,
     clone,
     create,
     delete,
     detect_base_image,
-    is_fedora_based,
     list_all,
     query_statuses,
     rename,
     skel_copy,
 )
-from ..overlay import ensure_running as overlay_ensure_running
-from ..overlay import refresh as overlay_refresh
-from ..overlay import reset as overlay_reset
-from ..run_args import DEFAULT_BASE_IMAGE, FEDORA_IMAGE, PROJECT_DIR
-from ..shared import list_shared, parse_shared_entry
+from ...overlay import ensure_running as overlay_ensure_running
+from ...overlay import refresh as overlay_refresh
+from ...overlay import reset as overlay_reset
+from ...run_args import DEFAULT_BASE_IMAGE, FEDORA_IMAGE, PROJECT_DIR
+from ...shared import list_shared, parse_shared_entry
+from ..desktop import (
+    _find_terminal,
+    _launch_in_terminal,
+    _open_file_manager,
+    _open_in_editor,
+    _open_terminal_at,
+)
+from .entries import SharedVolumeEntry
+from .instance import InstanceModel
 
 
 class _ActionFailed(Exception):
@@ -58,239 +65,6 @@ class _ActionFailed(Exception):
         super().__init__(str(cause))
         self.cause = cause
         self.snapshot = snapshot
-
-
-def _find_terminal() -> list[str]:
-    """Return a command prefix to launch a terminal emulator.
-
-    Tries xdg-terminal-exec first (standard portable method), then
-    common terminals. Returns an empty list if none are found.
-    """
-    candidates = [
-        (["xdg-terminal-exec"], []),
-        (["gnome-terminal"], ["--"]),
-        (["konsole"], ["-e"]),
-        (["xfce4-terminal"], ["-e"]),
-        (["alacritty"], ["-e"]),
-        (["kitty"], []),
-        (["foot"], []),
-        (["xterm"], ["-e"]),
-    ]
-    for base, sep in candidates:
-        if shutil.which(base[0]):
-            return base + sep
-    return []
-
-
-def _launch_in_terminal(cmd: list[str]) -> str:
-    """Launch cmd in a terminal emulator. Returns an error string or ''."""
-    prefix = _find_terminal()
-    if not prefix:
-        return "No terminal emulator found. Install xdg-terminal-exec, gnome-terminal, or similar."
-    subprocess.Popen([*prefix, *cmd])
-    return ""
-
-
-def _open_in_editor(file_path: Path) -> str:
-    """Open a file in the user's editor. Returns an error string or ''."""
-    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR", "vi")
-    return _launch_in_terminal([editor, str(file_path)])
-
-
-def _open_file_manager(path: str) -> str:
-    """Open a directory in the file manager via xdg-open. Returns error string or ''."""
-    if not shutil.which("xdg-open"):
-        return "xdg-open not found. Cannot open file manager."
-    subprocess.Popen(["xdg-open", path])
-    return ""
-
-
-def _open_terminal_at(path: str) -> str:
-    """Launch a terminal emulator with cwd set to path. Returns error string or ''."""
-    prefix = _find_terminal()
-    if not prefix:
-        return "No terminal emulator found. Install xdg-terminal-exec, gnome-terminal, or similar."
-    subprocess.Popen(prefix, cwd=path)
-    return ""
-
-
-class VolumeMountEntry(Atom):
-    """Structured representation of a volume mount string like '/host:/container:ro'."""
-
-    host_path = Str()
-    container_path = Str()
-    mode = Str("ro")
-
-    @classmethod
-    def from_spec(cls, spec: str) -> VolumeMountEntry:
-        """Parse a volume spec string like '/host:/container' or '/host:/container:ro'."""
-        parts = spec.split(":")
-        if len(parts) == 3:
-            return cls(host_path=parts[0], container_path=parts[1], mode=parts[2])
-        elif len(parts) == 2:
-            return cls(host_path=parts[0], container_path=parts[1], mode="ro")
-        else:
-            return cls(host_path=spec, container_path=spec, mode="ro")
-
-    def to_spec(self) -> str:
-        """Serialize back to a volume spec string. Always includes the mode suffix."""
-        return f"{self.host_path}:{self.container_path}:{self.mode}"
-
-
-class SharedVolumeEntry(Atom):
-    """A shared volume with enabled/disabled state and mode."""
-
-    name = Str()
-    enabled = Bool(False)
-    mode = Str("rw")
-
-
-class InstanceModel(Atom):
-    """Observable model for a single scratch-monkey instance."""
-
-    name = Str()
-    directory = Str()
-    image_built = Bool(False)
-    overlay_running = Bool(False)
-    overlay_id = Str("")
-    base_image = Str("")
-    # Non-empty when podman could not be queried for this instance (status unknown).
-    status_error = Str("")
-
-    # Config fields
-    cmd = Str("/bin/bash")
-    wayland = Bool(False)
-    ssh = Bool(False)
-    podman = Bool(False)
-    x11 = Bool(False)
-    home = Str("")
-    overlay = Bool(False)
-    sudo = Bool(True)
-    is_fedora = Bool(False)
-    gpu = Bool(False)
-    devices = List(str)
-    shared = List(str)
-    volumes = List(str)
-    env_vars = List(str)
-    volume_entries = List(VolumeMountEntry)
-    shared_entries = List(SharedVolumeEntry)
-
-    dirty = Bool(False)
-    _saved_config = Value()
-
-    @classmethod
-    def from_info(cls, info: InstanceInfo) -> InstanceModel:
-        m = cls()
-        m.name = info.name
-        m.directory = str(info.directory)
-        m.image_built = info.image_built
-        m.overlay_running = info.overlay_running
-        m.overlay_id = info.config.overlay_id
-        m.base_image = info.base_image or ""
-        m.status_error = info.status_error or ""
-        cfg = info.config
-        m.cmd = cfg.cmd
-        m.wayland = cfg.wayland
-        m.ssh = cfg.ssh
-        m.podman = cfg.podman
-        m.x11 = cfg.x11
-        m.home = cfg.home
-        m.overlay = cfg.overlay
-        m.sudo = cfg.sudo
-        m.is_fedora = is_fedora_based(Path(info.directory))
-        m.gpu = cfg.gpu
-        m.devices = list(cfg.devices)
-        m.shared = list(cfg.shared)
-        m.volumes = list(cfg.volumes)
-        m.env_vars = list(cfg.env)
-        m.volume_entries = [VolumeMountEntry.from_spec(v) for v in cfg.volumes]
-        m._saved_config = m.to_config()
-        return m
-
-    def to_config(self) -> InstanceConfig:
-        return InstanceConfig(
-            cmd=self.cmd,
-            wayland=self.wayland,
-            ssh=self.ssh,
-            podman=self.podman,
-            x11=self.x11,
-            home=self.home,
-            volumes=[
-                e.to_spec() for e in self.volume_entries
-                if e.host_path or e.container_path
-            ],
-            env=list(self.env_vars),
-            shared=[
-                f"{e.name}:{e.mode}" if e.mode != "rw" else e.name
-                for e in self.shared_entries
-                if e.enabled
-            ],
-            overlay=self.overlay,
-            sudo=self.sudo,
-            gpu=self.gpu,
-            devices=list(self.devices),
-        )
-
-    @observe(
-        'cmd', 'wayland', 'ssh', 'podman', 'x11', 'home', 'overlay', 'sudo', 'gpu', 'devices',
-        'volume_entries', 'env_vars', 'shared_entries',
-    )
-    def _on_config_change(self, change):
-        if self._saved_config is not None:
-            self.dirty = (self.to_config() != self._saved_config)
-
-    def check_dirty(self):
-        """Recompute dirty flag. Call after in-place nested object mutations."""
-        if self._saved_config is not None:
-            self.dirty = (self.to_config() != self._saved_config)
-
-    def revert(self):
-        """Discard changes and restore to last saved config."""
-        if self._saved_config is not None:
-            cfg = self._saved_config
-            self.cmd = cfg.cmd
-            self.wayland = cfg.wayland
-            self.ssh = cfg.ssh
-            self.podman = cfg.podman
-            self.x11 = cfg.x11
-            self.home = cfg.home
-            self.overlay = cfg.overlay
-            self.sudo = cfg.sudo
-            self.gpu = cfg.gpu
-            self.devices = list(cfg.devices)
-            self.env_vars = list(cfg.env)
-            self.volume_entries = [VolumeMountEntry.from_spec(v) for v in cfg.volumes]
-            self.shared = list(cfg.shared)
-            self.dirty = False
-
-    def add_volume_entry(self) -> None:
-        """Append a new blank volume mount entry."""
-        self.volume_entries = [*self.volume_entries, VolumeMountEntry()]
-
-    def remove_volume_entry(self, index: int) -> None:
-        """Remove volume entry at the given index."""
-        entries = list(self.volume_entries)
-        if 0 <= index < len(entries):
-            del entries[index]
-            self.volume_entries = entries
-
-    def add_env_var(self, value: str = "") -> None:
-        """Append a new environment variable entry."""
-        self.env_vars = [*self.env_vars, value]
-
-    def remove_env_var(self, index: int) -> None:
-        """Remove env var at the given index."""
-        entries = list(self.env_vars)
-        if 0 <= index < len(entries):
-            del entries[index]
-            self.env_vars = entries
-
-    def save(self) -> None:
-        """Persist the current model state to scratch.toml."""
-        config_path = Path(self.directory) / "scratch.toml"
-        save(config_path, self.to_config())
-        self._saved_config = self.to_config()
-        self.dirty = False
 
 
 class AppModel(Atom):
@@ -854,8 +628,8 @@ class AppModel(Atom):
 
         on_done(err): see rename_instance.
         """
-        from ..config import validate_name
-        from ..shared import create_shared
+        from ...config import validate_name
+        from ...shared import create_shared
 
         def action():
             validate_name(name)

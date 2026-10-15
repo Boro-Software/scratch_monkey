@@ -5,94 +5,14 @@ with enaml.imports():
     from enaml.stdlib.message_box import question
 from enaml.stdlib.dialog_buttons import DialogButton
 
-from enaml.widgets.api import Container, Dialog, Field, HGroup, Label, PushButton, ScrollArea, VGroup
+from enaml.widgets.api import Container, Field, HGroup, Label, PushButton, ScrollArea, VGroup
 from enaml.layout.api import vbox
 from enaml.core.api import Looper
 from enaml.styling import StyleSheet, Style, Setter
 
-from scratch_monkey.gui.dialog_helpers import make_on_done, start_working
-from scratch_monkey.gui.views.create_dialog import CreateInstanceDialog
-
-
-enamldef RenameDialog(Dialog): dlg:
-    attr app_model
-    attr instance_name : str = ""
-    attr _error_msg : str = ""
-    attr working : bool = False
-
-    title = "Rename Instance"
-
-    closing ::
-        # Don't let the user dismiss the dialog while the action is in flight.
-        if dlg.working:
-            change['value'].ignore()
-
-    Container:
-        enabled << not dlg.working
-        VGroup:
-            Label:
-                text << f"Rename '{dlg.instance_name}' to:"
-            Field: name_field:
-                text = dlg.instance_name
-                placeholder = "new-name"
-                submit_triggers = ['lost_focus', 'return_pressed', 'auto_sync']
-            Label: error_label:
-                text << dlg._error_msg
-                visible << bool(dlg._error_msg)
-            Label: working_label:
-                text = "Working..."
-                visible << dlg.working
-            HGroup:
-                PushButton:
-                    text = "Rename"
-                    enabled << bool(name_field.text.strip()) and name_field.text.strip() != dlg.instance_name
-                    clicked ::
-                        start_working(dlg)
-                        dlg.app_model.rename_instance(dlg.instance_name, name_field.text.strip(), make_on_done(dlg))
-                PushButton:
-                    text = "Cancel"
-                    clicked ::
-                        dlg.close()
-
-
-enamldef CloneDialog(Dialog): dlg:
-    attr app_model
-    attr instance_name : str = ""
-    attr _error_msg : str = ""
-    attr working : bool = False
-
-    title = "Clone Instance"
-
-    closing ::
-        # Don't let the user dismiss the dialog while the action is in flight.
-        if dlg.working:
-            change['value'].ignore()
-
-    Container:
-        enabled << not dlg.working
-        VGroup:
-            Label:
-                text << f"Clone '{dlg.instance_name}' as:"
-            Field: name_field:
-                placeholder << f"{dlg.instance_name}-copy"
-                submit_triggers = ['lost_focus', 'return_pressed', 'auto_sync']
-            Label: error_label:
-                text << dlg._error_msg
-                visible << bool(dlg._error_msg)
-            Label: working_label:
-                text = "Working..."
-                visible << dlg.working
-            HGroup:
-                PushButton:
-                    text = "Clone"
-                    enabled << bool(name_field.text.strip())
-                    clicked ::
-                        start_working(dlg)
-                        dlg.app_model.clone_instance(dlg.instance_name, name_field.text.strip(), make_on_done(dlg))
-                PushButton:
-                    text = "Cancel"
-                    clicked ::
-                        dlg.close()
+from scratch_monkey.gui.views.dialogs.clone_dialog import CloneDialog
+from scratch_monkey.gui.views.dialogs.create_instance_dialog import CreateInstanceDialog
+from scratch_monkey.gui.views.dialogs.rename_dialog import RenameDialog
 
 
 enamldef InstanceListPanel(Container): panel:

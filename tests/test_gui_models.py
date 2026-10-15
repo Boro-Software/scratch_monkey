@@ -38,7 +38,7 @@ def call_sync(method, *args, **kwargs) -> str:
         out.append(err)
         done.set()
 
-    with patch("scratch_monkey.gui.models.deferred_call", side_effect=lambda fn: fn()):
+    with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
         method(*args, on_done, **kwargs)
         _wait(done)
     return out[0]
@@ -59,7 +59,7 @@ def refresh_sync(app, **kwargs) -> None:
         fn()
         done.set()
 
-    with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+    with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
         app.refresh_async(**kwargs)
         _wait(done)
 
@@ -337,10 +337,16 @@ class TestGUISmoke:
         with enaml.imports():
             from scratch_monkey.gui.views import (
                 config_editor,  # noqa: F401
-                create_dialog,  # noqa: F401
                 instance_detail,  # noqa: F401
                 instance_list,  # noqa: F401
                 main_window,  # noqa: F401
+            )
+            from scratch_monkey.gui.views.dialogs import (
+                clone_dialog,  # noqa: F401
+                create_instance_dialog,  # noqa: F401
+                create_shared_dialog,  # noqa: F401
+                export_dialog,  # noqa: F401
+                rename_dialog,  # noqa: F401
             )
 
 
@@ -362,7 +368,7 @@ class TestAppModelCreateInstance:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             app = AppModel(instances_dir=instances_dir, runner=runner)
 
         return app, instances_dir, project_dir
@@ -373,7 +379,7 @@ class TestAppModelCreateInstance:
         app, instances_dir, project_dir = self._make_app(tmp_path)
         assert len(app.instances) == 0
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             result = create_sync(app, "myinst")
 
         assert result == ""
@@ -387,7 +393,7 @@ class TestAppModelCreateInstance:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             result = create_sync(app, "bad name!")
 
         assert result != ""
@@ -398,7 +404,7 @@ class TestAppModelCreateInstance:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "dup")
             result = create_sync(app, "dup")
 
@@ -409,7 +415,7 @@ class TestAppModelCreateInstance:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             result = create_sync(app, "fed", fedora=True)
 
         assert result == ""
@@ -421,7 +427,7 @@ class TestAppModelCreateInstance:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "first")
             create_sync(app, "second")
 
@@ -436,7 +442,7 @@ class TestAppModelCreateInstance:
 
         custom_cfg = InstanceConfig(cmd="/bin/zsh", wayland=True, env=["EDITOR=vim"])
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             result = create_sync(app, "configured", config=custom_cfg)
 
         assert result == ""
@@ -452,7 +458,7 @@ class TestAppModelCreateInstance:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             result = create_sync(app, "default-cfg")
 
         assert result == ""
@@ -469,7 +475,7 @@ class TestAppModelCreateInstance:
         shared_dir.mkdir()
         (shared_dir / "comms").mkdir()
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             refresh_sync(app)
             m = app.new_instance_model()
 
@@ -495,7 +501,7 @@ class TestAppModelCreateSharedVolume:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             app = AppModel(instances_dir=instances_dir, runner=runner)
 
         return app, instances_dir, project_dir
@@ -505,7 +511,7 @@ class TestAppModelCreateSharedVolume:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             result = call_sync(app.create_shared_volume, "mydata")
 
         assert result == ""
@@ -517,7 +523,7 @@ class TestAppModelCreateSharedVolume:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             call_sync(app.create_shared_volume, "dup")
             result = call_sync(app.create_shared_volume, "dup")
 
@@ -528,7 +534,7 @@ class TestAppModelCreateSharedVolume:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             result = call_sync(app.create_shared_volume, "bad name!")
 
         assert result != ""
@@ -551,7 +557,7 @@ class TestAppModelRenameInstance:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             app = AppModel(instances_dir=instances_dir, runner=runner)
 
         return app, instances_dir, project_dir
@@ -563,11 +569,11 @@ class TestAppModelRenameInstance:
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
         # Create an instance first
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "old")
         app.selected_instance = "old"
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             err = call_sync(app.rename_instance, "old", "new")
 
         assert err == ""
@@ -581,11 +587,11 @@ class TestAppModelRenameInstance:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
         app.selected_instance = "myinst"
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             err = call_sync(app.rename_instance, "myinst", "renamed")
 
         assert err == ""
@@ -597,12 +603,12 @@ class TestAppModelRenameInstance:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
         app.selected_instance = "myinst"
 
         # Renaming nonexistent instance should raise an error
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             err = call_sync(app.rename_instance, "nonexistent", "whatever")
 
         assert err != ""
@@ -626,7 +632,7 @@ class TestAppModelCloneInstance:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             app = AppModel(instances_dir=instances_dir, runner=runner)
 
         return app, instances_dir, project_dir
@@ -637,7 +643,7 @@ class TestAppModelCloneInstance:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "source")
             err = call_sync(app.clone_instance, "source", "dest")
 
@@ -651,7 +657,7 @@ class TestAppModelCloneInstance:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "orig")
             err = call_sync(app.clone_instance, "orig", "clone")
 
@@ -665,12 +671,12 @@ class TestAppModelCloneInstance:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "source")
             create_sync(app, "existing")
         app.selected_instance = "source"
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             err = call_sync(app.clone_instance, "source", "existing")
 
         assert err != ""
@@ -682,13 +688,13 @@ class TestAppModelCloneInstance:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "source")
 
         # Mark source image as existing so tag() gets called
         app._runner.image_exists.return_value = True
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             err = call_sync(app.clone_instance, "source", "dest")
 
         assert err == ""
@@ -849,14 +855,14 @@ class TestInstanceModelDirty:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             app = AppModel(instances_dir=instances_dir, runner=runner)
 
         # No instances, no unsaved changes
         assert app.has_unsaved_changes() is False
 
         # Create an instance
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         # Initially not dirty
@@ -886,7 +892,7 @@ class TestAppModelExportCommand:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             app = AppModel(instances_dir=instances_dir, runner=runner)
 
         return app, instances_dir, project_dir
@@ -898,11 +904,11 @@ class TestAppModelExportCommand:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         mock_path = P("/home/user/.local/bin/rg")
-        with patch("scratch_monkey.gui.models.export_command_fn", return_value=mock_path) as mock_export:
+        with patch("scratch_monkey.gui.models.app.export_command_fn", return_value=mock_path) as mock_export:
             err = app.export_command("myinst", "/usr/bin/rg")
 
         assert err == ""
@@ -929,11 +935,11 @@ class TestAppModelExportCommand:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         mock_path = P("/home/user/.local/bin/ripgrep")
-        with patch("scratch_monkey.gui.models.export_command_fn", return_value=mock_path) as mock_export:
+        with patch("scratch_monkey.gui.models.app.export_command_fn", return_value=mock_path) as mock_export:
             err = app.export_command("myinst", "/usr/bin/rg", "ripgrep")
 
         assert err == ""
@@ -948,10 +954,10 @@ class TestAppModelExportCommand:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
-        with patch("scratch_monkey.gui.models.export_command_fn", side_effect=ExportError("disk full")):
+        with patch("scratch_monkey.gui.models.app.export_command_fn", side_effect=ExportError("disk full")):
             err = app.export_command("myinst", "/usr/bin/rg")
 
         assert err == "disk full"
@@ -974,7 +980,7 @@ class TestAppModelEditFile:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             app = AppModel(instances_dir=instances_dir, runner=runner)
 
         return app, instances_dir, project_dir
@@ -985,10 +991,10 @@ class TestAppModelEditFile:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
-        with patch("scratch_monkey.gui.models._open_in_editor", return_value="") as mock_edit:
+        with patch("scratch_monkey.gui.models.app._open_in_editor", return_value="") as mock_edit:
             app.edit_file("myinst", "dockerfile")
 
         mock_edit.assert_called_once()
@@ -1002,10 +1008,10 @@ class TestAppModelEditFile:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
-        with patch("scratch_monkey.gui.models._open_in_editor", return_value="") as mock_edit:
+        with patch("scratch_monkey.gui.models.app._open_in_editor", return_value="") as mock_edit:
             app.edit_file("myinst", "env")
 
         mock_edit.assert_called_once()
@@ -1026,10 +1032,10 @@ class TestAppModelEditFile:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
-        with patch("scratch_monkey.gui.models._open_in_editor", return_value="No terminal emulator found."):
+        with patch("scratch_monkey.gui.models.app._open_in_editor", return_value="No terminal emulator found."):
             app.edit_file("myinst", "dockerfile")
 
         assert "No terminal emulator found." in app.status_message
@@ -1052,7 +1058,7 @@ class TestRunAsync:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             app = AppModel(instances_dir=instances_dir, runner=runner)
 
         return app, instances_dir, project_dir
@@ -1065,7 +1071,7 @@ class TestRunAsync:
         app, _, project_dir = self._make_app(tmp_path)
 
         # Replace deferred_call with synchronous execution for testing
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=lambda fn: fn()):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
             results = []
             done = threading.Event()
 
@@ -1089,7 +1095,7 @@ class TestRunAsync:
 
         app, _, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=lambda fn: fn()):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
             errors = []
             done = threading.Event()
 
@@ -1118,7 +1124,7 @@ class TestRunAsync:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             def work():
                 raise RuntimeError("something broke")
 
@@ -1157,7 +1163,7 @@ class TestRunAsync:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app._run_async("Refreshing 'foo'...", first_work, on_success=lambda r: None)
             _wait(gate, "first_work start")
             assert app.busy is True
@@ -1190,7 +1196,7 @@ class TestRunAsync:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app._run_async("First op...", failing_work)
             _wait(done)
 
@@ -1202,7 +1208,7 @@ class TestRunAsync:
             fn()
             done2.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call2):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call2):
             app._run_async("Second op...", lambda: None, on_success=lambda r: None)
             _wait(done2)
 
@@ -1227,7 +1233,7 @@ class TestRunAsync:
         def on_error(exc):
             app.status_message = f"Custom: {exc}"
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app._run_async("Working...", failing_work, on_error=on_error)
             _wait(done)
 
@@ -1241,7 +1247,7 @@ class TestRunAsync:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "todelete")
 
         assert any(i.name == "todelete" for i in app.instances)
@@ -1253,7 +1259,7 @@ class TestRunAsync:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app.delete_instance("todelete")
             _wait(done)
 
@@ -1268,7 +1274,7 @@ class TestRunAsync:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         # Pre-set overlay_running to True so we can verify it gets cleared
@@ -1283,8 +1289,8 @@ class TestRunAsync:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.overlay_reset", return_value=True),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
+            patch("scratch_monkey.gui.models.app.overlay_reset", return_value=True),
         ):
             app.reset_overlay("myinst")
             _wait(done)
@@ -1302,7 +1308,7 @@ class TestRunAsync:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         inst = next(i for i in app.instances if i.name == "myinst")
@@ -1315,7 +1321,7 @@ class TestRunAsync:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app.stop_instance("myinst")
             _wait(done)
 
@@ -1339,7 +1345,7 @@ class TestRunAsync:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         inst = next(i for i in app.instances if i.name == "myinst")
@@ -1353,8 +1359,8 @@ class TestRunAsync:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.overlay_ensure_running") as mock_ensure,
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
+            patch("scratch_monkey.gui.models.app.overlay_ensure_running") as mock_ensure,
         ):
             app.start_instance("myinst")
             _wait(done)
@@ -1383,7 +1389,7 @@ class TestRunAsync:
         from scratch_monkey.container import PodmanError
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         done = threading.Event()
@@ -1394,14 +1400,14 @@ class TestRunAsync:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
             patch.object(
                 AppModel, "poll_status", lambda self: seen_at_poll.append(self.status_message)
             ),
         ):
             if target:
                 ctx = patch(
-                    f"scratch_monkey.gui.models.{target}", side_effect=PodmanError("podman broke")
+                    f"scratch_monkey.gui.models.app.{target}", side_effect=PodmanError("podman broke")
                 )
             else:
                 app._runner.stop.side_effect = PodmanError("podman broke")
@@ -1435,7 +1441,7 @@ class TestRunAsync:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app.refresh_async()
             _wait(done)
 
@@ -1455,7 +1461,7 @@ class TestRunAsync:
             observed_status.append(app.status_message)
             return None
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=lambda fn: fn()):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
             app._run_async("Processing...", work, on_success=lambda r: done.set())
             _wait(done)
 
@@ -1474,7 +1480,7 @@ class TestRunAsync:
             observed_busy.append(app.busy)
             return None
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=lambda fn: fn()):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
             app._run_async("Working...", work, on_success=lambda r: done.set())
             _wait(done)
 
@@ -1496,7 +1502,7 @@ class TestRunAsync:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         done = threading.Event()
@@ -1506,8 +1512,8 @@ class TestRunAsync:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.overlay_reset", return_value=False),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
+            patch("scratch_monkey.gui.models.app.overlay_reset", return_value=False),
         ):
             app.reset_overlay("myinst")
             _wait(done)
@@ -1524,7 +1530,7 @@ class TestRunAsync:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         done = threading.Event()
@@ -1534,8 +1540,8 @@ class TestRunAsync:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.delete", side_effect=InstanceError("permission denied")),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
+            patch("scratch_monkey.gui.models.app.delete", side_effect=InstanceError("permission denied")),
         ):
             app.delete_instance("myinst")
             _wait(done)
@@ -1552,7 +1558,7 @@ class TestRunAsync:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         instances_before = app.instances
@@ -1564,8 +1570,8 @@ class TestRunAsync:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.overlay_reset", side_effect=PodmanError("podman broke")),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
+            patch("scratch_monkey.gui.models.app.overlay_reset", side_effect=PodmanError("podman broke")),
             # Don't start a real poll thread (it would outlive the test).
             patch.object(AppModel, "poll_status") as poll,
         ):
@@ -1585,7 +1591,7 @@ class TestRunAsync:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         inst = next(i for i in app.instances if i.name == "myinst")
@@ -1601,8 +1607,8 @@ class TestRunAsync:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.overlay_refresh") as mock_refresh,
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
+            patch("scratch_monkey.gui.models.app.overlay_refresh") as mock_refresh,
         ):
             app.refresh_overlay("myinst")
             _wait(done)
@@ -1627,7 +1633,7 @@ class TestRunAsync:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         app._runner.image_exists.return_value = False
@@ -1639,9 +1645,9 @@ class TestRunAsync:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.overlay_refresh") as mock_refresh,
-            patch("scratch_monkey.gui.models.detect_base_image", return_value=None),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
+            patch("scratch_monkey.gui.models.app.overlay_refresh") as mock_refresh,
+            patch("scratch_monkey.gui.models.app.detect_base_image", return_value=None),
         ):
             app.refresh_overlay("myinst")
             _wait(done)
@@ -1667,7 +1673,7 @@ class TestRunAsync:
 
         app, instances_dir, project_dir = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         instances_before = app.instances
@@ -1679,9 +1685,9 @@ class TestRunAsync:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
             patch(
-                "scratch_monkey.gui.models.overlay_refresh",
+                "scratch_monkey.gui.models.app.overlay_refresh",
                 side_effect=PodmanError("podman broke"),
             ),
             patch.object(AppModel, "poll_status") as poll,
@@ -1713,7 +1719,7 @@ class TestDirectoryHelpers:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             app = AppModel(instances_dir=instances_dir, runner=runner)
 
         return app
@@ -1725,8 +1731,8 @@ class TestDirectoryHelpers:
         app = self._make_app(tmp_path)
 
         with (
-            patch("scratch_monkey.gui.models.shutil.which", return_value="/usr/bin/xdg-open"),
-            patch("scratch_monkey.gui.models.subprocess.Popen") as mock_popen,
+            patch("scratch_monkey.gui.desktop.shutil.which", return_value="/usr/bin/xdg-open"),
+            patch("scratch_monkey.gui.desktop.subprocess.Popen") as mock_popen,
         ):
             app.open_directory("/some/path")
 
@@ -1739,7 +1745,7 @@ class TestDirectoryHelpers:
 
         app = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.shutil.which", return_value=None):
+        with patch("scratch_monkey.gui.desktop.shutil.which", return_value=None):
             app.open_directory("/some/path")
 
         assert "xdg-open not found" in app.status_message
@@ -1751,8 +1757,8 @@ class TestDirectoryHelpers:
         app = self._make_app(tmp_path)
 
         with (
-            patch("scratch_monkey.gui.models._find_terminal", return_value=["xdg-terminal-exec"]),
-            patch("scratch_monkey.gui.models.subprocess.Popen") as mock_popen,
+            patch("scratch_monkey.gui.desktop._find_terminal", return_value=["xdg-terminal-exec"]),
+            patch("scratch_monkey.gui.desktop.subprocess.Popen") as mock_popen,
         ):
             app.open_terminal("/some/path")
 
@@ -1765,7 +1771,7 @@ class TestDirectoryHelpers:
 
         app = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models._find_terminal", return_value=[]):
+        with patch("scratch_monkey.gui.desktop._find_terminal", return_value=[]):
             app.open_terminal("/some/path")
 
         assert "No terminal emulator found" in app.status_message
@@ -1788,7 +1794,7 @@ class TestPollStatus:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             app = AppModel(instances_dir=instances_dir, runner=runner)
 
         return app, instances_dir, project_dir, runner
@@ -1800,7 +1806,7 @@ class TestPollStatus:
 
         app, instances_dir, project_dir, runner = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         inst = next(i for i in app.instances if i.name == "myinst")
@@ -1815,7 +1821,7 @@ class TestPollStatus:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app.poll_status()
             _wait(done)
 
@@ -1830,7 +1836,7 @@ class TestPollStatus:
 
         app, instances_dir, project_dir, runner = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         inst = next(i for i in app.instances if i.name == "myinst")
@@ -1844,7 +1850,7 @@ class TestPollStatus:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app.poll_status()
             _wait(done)
 
@@ -1876,7 +1882,7 @@ class TestPollStatus:
 
         app, instances_dir, project_dir, runner = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         inst = next(i for i in app.instances if i.name == "myinst")
@@ -1892,7 +1898,7 @@ class TestPollStatus:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app.poll_status()
             _wait(done)
 
@@ -1906,7 +1912,7 @@ class TestPollStatus:
 
         app, instances_dir, project_dir, runner = self._make_app(tmp_path)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
 
         runner.container_running.side_effect = RuntimeError("podman down")
@@ -1917,7 +1923,7 @@ class TestPollStatus:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app.poll_status()
             _wait(done)
 
@@ -2066,7 +2072,7 @@ class TestInitialLoad:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app_call()
             _wait(done)
 
@@ -2084,7 +2090,7 @@ class TestInitialLoad:
 
         instances_dir = self._make_dir(tmp_path)
         app = AppModel(instances_dir=instances_dir, runner=MagicMock())
-        with patch("scratch_monkey.gui.models.threading.Thread"):
+        with patch("scratch_monkey.gui.models.app.threading.Thread"):
             app.refresh_async("Loading instances...")
         assert app.status_message == "Loading instances..."
         assert app.busy is True
@@ -2136,7 +2142,7 @@ class TestInitialLoad:
         instances_dir = self._make_dir(tmp_path)
         app = AppModel(instances_dir=instances_dir, runner=MagicMock())
         with patch(
-            "scratch_monkey.gui.models.list_all", side_effect=PodmanError("podman is broken")
+            "scratch_monkey.gui.models.app.list_all", side_effect=PodmanError("podman is broken")
         ):
             self._sync_call(lambda: app.refresh_async("Loading instances..."))
         assert "podman is broken" in app.error_message
@@ -2208,7 +2214,7 @@ class TestPollStatusErrors:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             app_call()
             _wait(done)
 
@@ -2352,7 +2358,7 @@ def _make_dialog_app(tmp_path):
     runner.image_exists.return_value = False
     project_dir = tmp_path / "project"
     project_dir.mkdir()
-    with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+    with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
         app = AppModel(instances_dir=instances_dir, runner=runner)
     return app, instances_dir, project_dir
 
@@ -2372,7 +2378,7 @@ _DIALOG_CASES = {
         setup=["old"],
         select="old",
         invoke=lambda app, cb: app.rename_instance("old", "new", cb),
-        patch_target="scratch_monkey.gui.models.rename",
+        patch_target="scratch_monkey.gui.models.app.rename",
         fail=lambda app, cb: app.rename_instance("nonexistent", "whatever", cb),
         selected_after="new",
         names_after={"new"},
@@ -2382,7 +2388,7 @@ _DIALOG_CASES = {
         setup=["src"],
         select="src",
         invoke=lambda app, cb: app.clone_instance("src", "dest", cb),
-        patch_target="scratch_monkey.gui.models.clone",
+        patch_target="scratch_monkey.gui.models.app.clone",
         fail=lambda app, cb: app.clone_instance("src", "src", cb),
         selected_after="dest",
         names_after={"src", "dest"},
@@ -2392,7 +2398,7 @@ _DIALOG_CASES = {
         setup=["existing"],
         select="existing",
         invoke=lambda app, cb: app.create_instance("fresh", cb),
-        patch_target="scratch_monkey.gui.models.create",
+        patch_target="scratch_monkey.gui.models.app.create",
         fail=lambda app, cb: app.create_instance("existing", cb),
         selected_after="fresh",
         names_after={"existing", "fresh"},
@@ -2419,7 +2425,7 @@ class TestDialogActions:
         from unittest.mock import patch
 
         app, instances_dir, project_dir = _make_dialog_app(tmp_path)
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             for name in case["setup"]:
                 assert create_sync(app, name) == ""
         app.selected_instance = case["select"]
@@ -2435,7 +2441,7 @@ class TestDialogActions:
         case = _DIALOG_CASES[case_id]
         app, instances_dir, project_dir = self._app(tmp_path, case)
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             err = self._run(app, case["invoke"])
 
         assert err == ""
@@ -2454,7 +2460,7 @@ class TestDialogActions:
         app, instances_dir, project_dir = self._app(tmp_path, case)
         before = {i.name for i in app.instances}
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             err = self._run(app, case["fail"])
 
         assert err != ""
@@ -2474,7 +2480,7 @@ class TestDialogActions:
         app._busy_status = "Starting 'x'..."
         calls = []
 
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             case["invoke"](app, calls.append)
 
         assert len(calls) == 1
@@ -2488,7 +2494,7 @@ class TestDialogActions:
         import threading
         from unittest.mock import patch
 
-        import scratch_monkey.gui.models as models
+        import scratch_monkey.gui.models.app as models
 
         case = _DIALOG_CASES[case_id]
         app, instances_dir, project_dir = self._app(tmp_path, case)
@@ -2515,10 +2521,10 @@ class TestDialogActions:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir),
+            patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir),
             patch(case["patch_target"], side_effect=spy_action),
-            patch("scratch_monkey.gui.models.list_all", side_effect=spy_list_all),
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=lambda fn: fn()),
+            patch("scratch_monkey.gui.models.app.list_all", side_effect=spy_list_all),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()),
         ):
             case["invoke"](app, on_done)
             # Returned while the action is still blocked: the GUI thread is not held.
@@ -2537,11 +2543,11 @@ class TestDeleteReload:
         import threading
         from unittest.mock import patch
 
-        import scratch_monkey.gui.models as models
+        import scratch_monkey.gui.models.app as models
         from scratch_monkey.instance import InstanceError
 
         app, instances_dir, project_dir = _make_dialog_app(tmp_path)
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "keep")
         app.selected_instance = "keep"
         gui_thread = threading.current_thread()
@@ -2559,9 +2565,9 @@ class TestDeleteReload:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.delete", side_effect=InstanceError("nope")),
-            patch("scratch_monkey.gui.models.list_all", side_effect=spy),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
+            patch("scratch_monkey.gui.models.app.delete", side_effect=InstanceError("nope")),
+            patch("scratch_monkey.gui.models.app.list_all", side_effect=spy),
         ):
             app.delete_instance("keep")
             _wait(done)
@@ -2591,7 +2597,7 @@ class TestRunAsyncReturnValue:
             fn()
             done.set()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call):
             assert app._run_async("go", lambda: None) is True
             _wait(done)
         app.busy = True
@@ -2606,9 +2612,9 @@ class TestEditConfigReload:
         from unittest.mock import MagicMock, patch
 
         with (
-            patch("scratch_monkey.gui.models._find_terminal", return_value=["term"]),
-            patch("scratch_monkey.gui.models.subprocess.Popen", return_value=MagicMock()),
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=lambda fn: fn()),
+            patch("scratch_monkey.gui.models.app._find_terminal", return_value=["term"]),
+            patch("scratch_monkey.gui.models.app.subprocess.Popen", return_value=MagicMock()),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()),
         ):
             app.edit_config(name)
 
@@ -2616,10 +2622,10 @@ class TestEditConfigReload:
         import threading
         from unittest.mock import patch
 
-        import scratch_monkey.gui.models as models
+        import scratch_monkey.gui.models.app as models
 
         app, instances_dir, project_dir = _make_dialog_app(tmp_path)
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
         app.selected_instance = "myinst"
         gui_thread = threading.current_thread()
@@ -2631,8 +2637,8 @@ class TestEditConfigReload:
             return real(*a, **kw)
 
         with (
-            patch("scratch_monkey.gui.models.list_all", side_effect=spy),
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=lambda fn: fn()),
+            patch("scratch_monkey.gui.models.app.list_all", side_effect=spy),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()),
         ):
             self._edit(app, "myinst")
             _wait_for(lambda: app.status_message == "Reloaded config for 'myinst'", "reload")
@@ -2645,11 +2651,11 @@ class TestEditConfigReload:
         from unittest.mock import patch
 
         app, instances_dir, project_dir = _make_dialog_app(tmp_path)
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
         gate = threading.Event()
 
-        with patch("scratch_monkey.gui.models.deferred_call", side_effect=lambda fn: fn()):
+        with patch("scratch_monkey.gui.models.app.deferred_call", side_effect=lambda fn: fn()):
             assert app._run_async("Other op", lambda: gate.wait(timeout=5))
             self._edit(app, "myinst")
             _wait_for(lambda: app._reload_pending, "reload to be queued")
@@ -2667,7 +2673,7 @@ class TestImageLookupOffGuiThread:
         from unittest.mock import patch
 
         app, instances_dir, project_dir = _make_dialog_app(tmp_path)
-        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+        with patch("scratch_monkey.gui.models.app.PROJECT_DIR", project_dir):
             create_sync(app, "myinst")
         gui_thread = threading.current_thread()
         threads = []
@@ -2684,9 +2690,9 @@ class TestImageLookupOffGuiThread:
             done.set()
 
         with (
-            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
-            patch("scratch_monkey.gui.models.overlay_ensure_running"),
-            patch("scratch_monkey.gui.models.overlay_refresh"),
+            patch("scratch_monkey.gui.models.app.deferred_call", side_effect=sync_deferred_call),
+            patch("scratch_monkey.gui.models.app.overlay_ensure_running"),
+            patch("scratch_monkey.gui.models.app.overlay_refresh"),
         ):
             getattr(app, method)("myinst")
             _wait(done)
