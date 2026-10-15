@@ -234,10 +234,14 @@ A graphical interface is available when installed with GUI dependencies:
 
 ```bash
 uv tool install --editable ".[gui]"
-scratch-monkey-gui                                # standalone launcher
-scratch-monkey gui                                # or via the CLI (respects --instances-dir)
-scratch-monkey --instances-dir /path/to/dir gui  # use a custom instances directory
+scratch-monkey --gui                               # launch the GUI
+scratch-monkey --instances-dir /path/to/dir --gui  # use a custom instances directory
 ```
+
+`--gui` cannot be combined with a command. The old `scratch-monkey-gui` launcher
+and `scratch-monkey gui` subcommand were removed; after upgrading, reinstall
+(`uv tool install --editable ".[gui]" --force`) to drop the stale
+`~/.local/bin/scratch-monkey-gui` shim.
 
 ![scratch-monkey GUI with Zed editor launched from inside an instance](screenshot.png)
 
@@ -328,13 +332,13 @@ Fedora instances use their own filesystem — no host system mounts.
 | `share add <vol> <instance>` | Add volume to instance config |
 | `share remove <vol> <instance>` | Remove volume from instance config |
 | `share list` | List all shared volumes and usage |
-| `gui` | Launch the GUI (requires `[gui]` extras) |
 
 Global options (before the command):
 
 ```
 --instances-dir TEXT   Default: ~/scratch-monkey
 --base-image TEXT      Default: scratch_monkey
+--gui                  Launch the GUI instead of a command (requires [gui] extra)
 ```
 
 ---
