@@ -206,12 +206,12 @@ class TestRunDaemon:
         with patch("subprocess.run", return_value=make_result(0)) as mock_run:
             runner.run_daemon("mycontainer", "myimage", ["--network=host"])
             args = mock_run.call_args[0][0]
-            assert "run" in args
-            assert "-dit" in args
-            assert "--name" in args
-            assert "mycontainer" in args
-            assert "myimage" in args
-            assert "--init" in args
+            assert args[1:] == [
+                "run", "-d", "--init", "--name", "mycontainer",
+                "--network=host", "myimage", "sleep", "infinity",
+            ]
+            assert "-dit" not in args
+            assert "-it" not in args
 
     def test_captures_output_and_raises_with_stderr_on_failure(self, runner):
         """run_daemon captures stderr so PodmanError carries real failure detail
