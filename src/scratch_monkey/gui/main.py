@@ -7,11 +7,9 @@ from pathlib import Path
 
 import click
 
-from ..config import DEFAULT_INSTANCES_DIR
-
 
 def launch(instances_dir: Path) -> None:
-    """Launch the GUI application. Called by both entry points."""
+    """Launch the GUI application. Invoked by `scratch-monkey --gui`."""
     try:
         import enaml
 
@@ -51,17 +49,3 @@ def launch(instances_dir: Path) -> None:
 
     app.start()
     poll_timer.stop()
-
-
-@click.command()
-@click.option(
-    "--instances-dir",
-    envvar="SCRATCH_MONKEY_INSTANCES_DIR",
-    default=str(DEFAULT_INSTANCES_DIR),
-    show_default=True,
-    show_envvar=True,
-    help="Directory where instances are stored.",
-)
-def gui_cli(instances_dir: str) -> None:
-    """Launch the scratch-monkey GUI."""
-    launch(Path(instances_dir))
