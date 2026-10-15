@@ -9,7 +9,8 @@ import sys
 from .config import generate_overlay_id, save
 from .container import PodmanError, PodmanRunner
 from .instance import Instance, is_fedora_based
-from .run_args import build_run_args
+from .mountpoints import prepare_mountpoints, removed_outside_home_targets
+from .run_args import build_run_args, container_home_path
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,9 @@ def ensure_running(
 
     if not runner.container_exists(container_name):
         run_args, warnings = build_run_args(instance)
+        # Create home-relative mount points as the current user *before* the
+        # runtime does it as container root (a subuid-owned stub on the host).
+        warnings += prepare_mountpoints(instance, run_args, container_home_path())
         for w in warnings:
             print(f"Warning: {w}", file=sys.stderr)
         runner.run_daemon(container_name, image, run_args)
@@ -239,6 +243,16 @@ def refresh(
         # Nothing to preserve — just ensure it's running.
         return ensure_running(instance, runner, image)
 
+    # Learn the old container's mount destinations from podman itself: after a
+    # config change the previous config is no longer known, but the container
+    # still records exactly what it was created with.  Must happen before
+    # removal.  Best effort — a failed inspect must never block the refresh.
+    try:
+        old_destinations = runner.container_mount_destinations(container_name)
+    except PodmanError as exc:
+        logger.debug("could not inspect old mounts: %s", exc)
+        old_destinations = []
+
     if runner.container_running(container_name):
         runner.stop(container_name)
 
@@ -250,7 +264,35 @@ def refresh(
 
     runner.remove(container_name)
 
-    return ensure_running(instance, runner, recreate_image)
+    ensure_running(instance, runner, recreate_image)
+    _remove_stale_outside_stubs(runner, container_name, old_destinations)
+    return container_name
+
+
+def _remove_stale_outside_stubs(
+    runner: PodmanRunner, container_name: str, old_destinations: list[str]
+) -> None:
+    """rmdir mount-point stubs outside the home that are no longer mounted.
+
+    The runtime creates a missing mount-point directory in the container's
+    writable layer, and `refresh` commits that layer, so the stub survives the
+    removal of the mount.  Remove, as root inside the new container, the
+    stubs of destinations that were mounted before but are not any more.
+    ``rmdir`` only removes empty directories; failures (non-empty, already
+    gone, not a directory) are ignored.  Home-relative stubs live on the host
+    and are handled by `prepare_mountpoints`.
+    """
+    if not old_destinations:
+        return
+    try:
+        new_destinations = runner.container_mount_destinations(container_name)
+        stale = removed_outside_home_targets(
+            old_destinations, new_destinations, container_home_path()
+        )
+        if stale:
+            runner.exec_capture(container_name, ["rmdir", "--", *stale], user="root")
+    except PodmanError as exc:
+        logger.debug("stale mount-point cleanup skipped: %s", exc)
 
 
 def reset(instance: Instance, runner: PodmanRunner) -> bool:

@@ -22,6 +22,7 @@ def mock_runner() -> MagicMock:
     runner.container_running.return_value = False
     runner.container_status.return_value = ""
     runner.exec_capture.return_value = ""
+    runner.container_mount_destinations.return_value = []
     return runner
 
 

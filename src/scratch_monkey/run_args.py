@@ -69,6 +69,13 @@ def gpu_devices(*, use_cdi: bool = True) -> list[str]:
     return devices
 
 
+def container_home_path(*, root: bool = False) -> str:
+    """Return the in-container path where the instance home is mounted."""
+    if root:
+        return "/root"
+    return f"/home/{os.environ.get('USER', 'user')}"
+
+
 def build_run_args(
     instance: Instance,
     *,
@@ -84,10 +91,7 @@ def build_run_args(
     user = os.environ.get("USER", "user")
     warnings: list[str] = []
 
-    if root:
-        container_home = "/root"
-    else:
-        container_home = f"/home/{user}"
+    container_home = container_home_path(root=root)
 
     if is_fedora is None:
         is_fedora = is_fedora_based(instance.directory)
