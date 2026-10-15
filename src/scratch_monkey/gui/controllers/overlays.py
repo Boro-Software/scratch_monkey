@@ -32,6 +32,11 @@ class OverlayController:
             return name
         return detect_base_image(inst_dir) or DEFAULT_BASE_IMAGE
 
+    def _show_warnings(self, warnings: list[str]) -> None:
+        """Show warnings collected by a worker in the banner (GUI thread only)."""
+        if warnings:
+            self._app.warning_message = "\n".join(warnings)
+
     def enter(self, name: str, *, root: bool = False) -> None:
         """Open a terminal running scratch-monkey enter for the named instance."""
         app = self._app
@@ -62,9 +67,11 @@ class OverlayController:
             return
         inst = Instance.from_directory(inst_dir)
 
+        warnings: list[str] = []
+
         def work():
             image = self._image_for(name, inst_dir)
-            overlay_ensure_running(inst, app.runner, image)
+            overlay_ensure_running(inst, app.runner, image, on_warning=warnings.append)
 
         def on_success(_result):
             for m in app.instances:
@@ -72,6 +79,7 @@ class OverlayController:
                     m.overlay_running = True
                     break
             app.status_message = f"Started {name!r}"
+            self._show_warnings(warnings)
 
         def on_error(exc):
             app.status_message = f"Error starting {name!r}: {exc}"
@@ -180,9 +188,11 @@ class OverlayController:
             return
         inst = Instance.from_directory(inst_dir)
 
+        warnings: list[str] = []
+
         def work():
             image = self._image_for(name, inst_dir)
-            overlay_refresh(inst, app.runner, image)
+            overlay_refresh(inst, app.runner, image, on_warning=warnings.append)
 
         def on_success(_result):
             for m in app.instances:
@@ -190,6 +200,7 @@ class OverlayController:
                     m.overlay_running = True
                     break
             app.status_message = f"Refreshed {name!r} (installs preserved)"
+            self._show_warnings(warnings)
 
         def on_error(exc):
             app.status_message = f"Error refreshing {name!r}: {exc}"

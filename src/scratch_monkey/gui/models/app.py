@@ -22,6 +22,7 @@ except ImportError:
 from ...container import PodmanRunner
 from ...instance import InstanceInfo, list_all, query_statuses
 from ...shared import list_shared, parse_shared_entry
+from ..banner import banner_content, elide_message
 from ..controllers import (
     InstanceController,
     OverlayController,
@@ -70,7 +71,15 @@ class AppModel(Atom):
     # Using Value() (not @property) so Enaml bindings re-fire when it changes.
     selected = Value()
     status_message = Str("")
+    # Banner messages.  An error (red) takes precedence over a warning (amber);
+    # the views bind to the derived banner_* members below, which are kept in
+    # sync by the observers.  Dismiss with dismiss_banner().
     error_message = Str("")
+    warning_message = Str("")
+    banner_level = Str("")  # "", "error" or "warning"
+    banner_text = Str("")  # full text of the message being shown
+    banner_summary = Str("")  # one elided line for the banner label
+    banner_truncated = Bool(False)  # summary lacks part of the text -> "Details"
     busy = Bool(False)
     _polling = Bool(False)
     available_shared = List(str)
@@ -105,6 +114,29 @@ class AppModel(Atom):
         # is started by the caller via refresh_async() once the window is up.
 
     # ── observers ─────────────────────────────────────────────────────────────
+
+    def _observe_error_message(self, change: dict) -> None:
+        self._update_banner()
+
+    def _observe_warning_message(self, change: dict) -> None:
+        self._update_banner()
+
+    def _update_banner(self) -> None:
+        level, text = banner_content(self.error_message, self.warning_message)
+        summary, truncated = elide_message(text)
+        self.banner_level = level
+        self.banner_text = text
+        self.banner_summary = summary
+        self.banner_truncated = truncated
+
+    def dismiss_banner(self) -> None:
+        """Clear the message the banner is showing (the error, else the warning)."""
+        if self.error_message:
+            if self.error_message == self._load_error_banner:
+                self._load_error_banner = ""
+            self.error_message = ""
+        else:
+            self.warning_message = ""
 
     def _observe_selected_instance(self, change: dict) -> None:
         """Keep self.selected in sync when selected_instance changes."""
@@ -172,6 +204,7 @@ class AppModel(Atom):
         self._busy_status = status
         self.status_message = status
         self.error_message = ""
+        self.warning_message = ""
 
         def _thread():
             try:

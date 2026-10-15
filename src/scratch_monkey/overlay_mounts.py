@@ -29,11 +29,12 @@ import hashlib
 import os
 import posixpath
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import VOLUME_MODE_OVERLAY, ConfigError, split_volume_spec
-from .container import PodmanRunner
+from .container import PodmanError, PodmanRunner
 from .instance import Instance
 
 OVERLAYS_DIRNAME = ".overlays"
@@ -113,6 +114,108 @@ def overlay_container_paths(volumes: list[str]) -> list[str]:
         if is_overlay_spec(spec):
             paths.append(split_volume_spec(spec)[1])
     return paths
+
+
+# ── lower-layer limits ───────────────────────────────────────────────────────
+#
+# The kernel refuses (``overlayfs: failed to clone lowerpath``) a lower
+# directory that has other mounts beneath it.  Rootless podman keeps live mounts
+# (running containers' merged rootfs, shm tmpfs) inside its storage root, which
+# lives in the home directory, so overlaying e.g. ``~/.local`` always fails.
+
+
+def _realpath(path: str) -> str:
+    return os.path.realpath(os.path.expanduser(path))
+
+
+def _contains(ancestor: str, path: str, *, strict: bool = False) -> bool:
+    """True if *path* is *ancestor* itself (unless strict) or lies beneath it."""
+    if path == ancestor:
+        return not strict
+    return path.startswith(ancestor.rstrip("/") + "/")
+
+
+def _unescape_mountinfo(field: str) -> str:
+    """Decode the octal escapes (``\\040`` for a space, ...) of a mountinfo path."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def parse_mountinfo(text: str) -> frozenset[str]:
+    """Mount points listed in ``/proc/self/mountinfo`` content (field 5 of each line)."""
+    points = set()
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) > 4:
+            points.add(_unescape_mountinfo(fields[4]))
+    return frozenset(points)
+
+
+def read_host_mountinfo() -> str:
+    """Content of ``/proc/self/mountinfo``; empty when it cannot be read."""
+    try:
+        return Path("/proc/self/mountinfo").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+@dataclass(frozen=True)
+class OverlayHostFacts:
+    """What the host looks like, as far as overlay lower layers are concerned.
+
+    Gathered once by ``overlay_host_facts`` (which may call podman and read
+    ``/proc``) and handed to the pure ``run_args.build_run_args``.  The default
+    (no facts) rejects nothing.
+
+    ``storage_roots``: realpath'd podman storage roots; a lower layer may be
+    neither one of them nor contain one.
+    ``mount_points``: mount points of the host; a lower layer may not have one
+    strictly beneath it (being a mount point itself is fine).
+    """
+
+    storage_roots: frozenset[str] = frozenset()
+    mount_points: frozenset[str] = frozenset()
+
+    def conflict(self, source: str) -> str | None:
+        """Why *source* cannot be an overlay lower layer, or None if it can."""
+        real = _realpath(source)
+        for root in sorted(self.storage_roots):
+            if _contains(real, root):
+                return (
+                    "podman's container storage lives inside it "
+                    f"({root}), and the kernel cannot overlay a directory with "
+                    "active mounts beneath it"
+                )
+        for point in sorted(self.mount_points):
+            if _contains(real, point, strict=True):
+                return (
+                    f"another mount ({point}) lies beneath it, and the kernel "
+                    "cannot overlay a directory with active mounts beneath it"
+                )
+        return None
+
+
+def overlay_host_facts(
+    instance: Instance,
+    runner: PodmanRunner,
+    *,
+    read_mountinfo: Callable[[], str] = read_host_mountinfo,
+) -> OverlayHostFacts:
+    """Gather the facts ``build_run_args`` needs to vet the overlay volumes.
+
+    Only does any work (a cached ``podman info`` query, a ``/proc`` read) when
+    the instance has an overlay-mode volume.  Best effort: unknown facts are
+    simply left out.
+    """
+    if not overlay_container_paths(instance.config.volumes):
+        return OverlayHostFacts()
+    roots: set[str] = set()
+    try:
+        graph_root = runner.graph_root()
+    except PodmanError:
+        graph_root = None
+    if isinstance(graph_root, str) and graph_root:
+        roots.add(_realpath(graph_root))
+    return OverlayHostFacts(frozenset(roots), parse_mountinfo(read_mountinfo()))
 
 
 # ── directory creation ───────────────────────────────────────────────────────

@@ -32,6 +32,7 @@ from ..overlay_mounts import (
     ensure_overlay_dirs,
     list_overlay_entries,
     mount_id,
+    overlay_host_facts,
     reset_overlays,
 )
 from ..run_args import (
@@ -656,7 +657,12 @@ def _run_instance(
 
     # Build podman args via shared helper
     container_home = container_home_path(root=root)
-    run_args, warnings = build_run_args(instance=inst, is_fedora=fedora, root=root)
+    run_args, warnings = build_run_args(
+        instance=inst,
+        is_fedora=fedora,
+        root=root,
+        host_facts=overlay_host_facts(inst, runner),
+    )
     # Pre-create home-relative mount points as the current user so the runtime
     # doesn't create them as container root (subuid-owned stubs on the host).
     warnings += prepare_mountpoints(inst, run_args, container_home)

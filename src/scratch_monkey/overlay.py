@@ -5,15 +5,20 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Callable
 
 from .config import generate_overlay_id, save
 from .container import PodmanError, PodmanRunner
 from .instance import Instance, is_fedora_based
 from .mountpoints import prepare_mountpoints, removed_outside_home_targets
-from .overlay_mounts import ensure_overlay_dirs
+from .overlay_mounts import ensure_overlay_dirs, overlay_host_facts
 from .run_args import build_run_args, container_home_path
 
 logger = logging.getLogger(__name__)
+
+
+def _warn_stderr(message: str) -> None:
+    print(f"Warning: {message}", file=sys.stderr)
 
 
 class OverlayError(Exception):
@@ -31,16 +36,23 @@ def ensure_running(
     instance: Instance,
     runner: PodmanRunner,
     image: str,
+    *,
+    on_warning: Callable[[str], None] | None = None,
 ) -> str:
     """Ensure the overlay container for the instance is running.
 
     Creates it if missing, starts it if stopped.
     Returns the container name.
 
+    Warnings (skipped volumes, mount-point problems, ...) go to *on_warning*;
+    by default they are printed to stderr as ``Warning: ...``.  Callers without
+    a visible stderr (the GUI) pass a collector.
+
     For fedora-based instances, creates the host user, grants sudo, and
     (when ``podman`` is enabled) installs the podman client tooling.
     For scratch-based instances, skips user setup entirely.
     """
+    warn = on_warning or _warn_stderr
     container_name = _ensure_overlay_id(instance)
 
     exists = runner.container_exists(container_name)
@@ -51,13 +63,14 @@ def ensure_running(
     dir_warnings = ensure_overlay_dirs(instance)
 
     if not exists:
-        run_args, warnings = build_run_args(instance)
+        host_facts = overlay_host_facts(instance, runner)
+        run_args, warnings = build_run_args(instance, host_facts=host_facts)
         warnings += dir_warnings
         # Create home-relative mount points as the current user *before* the
         # runtime does it as container root (a subuid-owned stub on the host).
         warnings += prepare_mountpoints(instance, run_args, container_home_path())
         for w in warnings:
-            print(f"Warning: {w}", file=sys.stderr)
+            warn(w)
         runner.run_daemon(container_name, image, run_args)
 
         # User setup is only needed for fedora-based instances.
@@ -69,11 +82,12 @@ def ensure_running(
                 runner,
                 sudo=instance.config.sudo,
                 podman=instance.config.podman,
+                on_warning=warn,
             )
 
     else:
         for w in dir_warnings:
-            print(f"Warning: {w}", file=sys.stderr)
+            warn(w)
         if not runner.container_running(container_name):
             runner.start(container_name)
 
@@ -86,6 +100,7 @@ def _setup_fedora_user(
     *,
     sudo: bool = True,
     podman: bool = False,
+    on_warning: Callable[[str], None] | None = None,
 ) -> None:
     """Create the host user in a fedora overlay container.
 
@@ -128,10 +143,9 @@ def _setup_fedora_user(
             )
         except PodmanError as exc:
             logger.debug("podman client install failed: %s", exc)
-            print(
-                "Warning: could not install podman/podman-compose in the container "
-                f"({exc}); install them manually.",
-                file=sys.stderr,
+            (on_warning or _warn_stderr)(
+                "could not install podman/podman-compose in the container "
+                f"({exc}); install them manually."
             )
 
     # Create user (ignore error if already exists)
@@ -228,6 +242,7 @@ def refresh(
     image: str,
     *,
     discard: bool = False,
+    on_warning: Callable[[str], None] | None = None,
 ) -> str:
     """Recreate the overlay container so it picks up fresh run args.
 
@@ -247,13 +262,15 @@ def refresh(
     in place — the writable layer is never destroyed without a successful
     snapshot first.
 
+    Warnings go to *on_warning* (default: stderr), as for `ensure_running()`.
+
     Returns the container name.
     """
     container_name = _ensure_overlay_id(instance)
 
     if not runner.container_exists(container_name):
         # Nothing to preserve — just ensure it's running.
-        return ensure_running(instance, runner, image)
+        return ensure_running(instance, runner, image, on_warning=on_warning)
 
     # Learn the old container's mount destinations from podman itself: after a
     # config change the previous config is no longer known, but the container
@@ -276,7 +293,7 @@ def refresh(
 
     runner.remove(container_name)
 
-    ensure_running(instance, runner, recreate_image)
+    ensure_running(instance, runner, recreate_image, on_warning=on_warning)
     _remove_stale_outside_stubs(runner, container_name, old_destinations)
     return container_name
 

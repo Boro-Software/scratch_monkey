@@ -1,0 +1,28 @@
+"""Details dialog for the main window's message banner: the full, selectable text."""
+
+from enaml.layout.api import hbox, spacer, vbox
+from enaml.widgets.api import Container, Dialog, MultilineField, PushButton
+
+
+enamldef BannerDetailsDialog(Dialog): dlg:
+    # `text` is the full banner message; `level` is "error" or "warning".
+    attr text : str = ""
+    attr level : str = "error"
+
+    title = "Warning details" if dlg.level == "warning" else "Error details"
+    initial_size = (720, 360)
+
+    Container:
+        constraints = [
+            vbox(details, hbox(spacer, close_btn)),
+        ]
+        MultilineField: details:
+            # Read-only but selectable/copyable; scrolls when the text is long.
+            read_only = True
+            text << dlg.text
+            hug_width = 'ignore'
+            hug_height = 'ignore'
+            minimum_size = (200, 120)
+        PushButton: close_btn:
+            text = "Close"
+            clicked :: dlg.close()

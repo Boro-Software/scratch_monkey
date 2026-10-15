@@ -34,6 +34,8 @@ class PodmanRunner:
 
     podman_bin: str = "podman"
     extra_args: list[str] = field(default_factory=list)
+    # Memoised graph root (only successful queries are cached).
+    _graph_root: str | None = field(default=None, init=False, repr=False, compare=False)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -110,6 +112,31 @@ class PodmanRunner:
         """Return True if the named image exists locally."""
         result = self._run(["image", "exists", image], check=False, timeout=QUERY_TIMEOUT)
         return result.returncode == 0
+
+    # ── storage queries ───────────────────────────────────────────────────────
+
+    def graph_root(self) -> str | None:
+        """Return podman's container-storage root (``Store.GraphRoot``).
+
+        Cached per runner after the first successful answer.  Returns None when
+        podman cannot be queried (error, timeout, empty answer); a failure is
+        not cached, so a later call tries again.
+        """
+        if self._graph_root is not None:
+            return self._graph_root
+        try:
+            result = self._run(
+                ["info", "--format", "{{.Store.GraphRoot}}"],
+                check=False,
+                timeout=QUERY_TIMEOUT,
+            )
+        except PodmanError:
+            return None
+        root = result.stdout.strip() if result.returncode == 0 else ""
+        if not root:
+            return None
+        self._graph_root = root
+        return root
 
     # ── container queries ─────────────────────────────────────────────────────
 

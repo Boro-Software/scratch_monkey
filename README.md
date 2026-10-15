@@ -207,6 +207,8 @@ Without `--mount` this also resets leftovers of mounts that are no longer in `sc
 
 `scratch-monkey delete` removes subuid-owned files (overlay changes, mount-point stubs) with `podman unshare rm -rf` when a plain delete is not permitted.
 
+**Limitation:** the kernel cannot use a directory as a lower layer if other mounts exist beneath it. Rootless podman keeps its container storage (`~/.local/share/containers/storage`) in your home, with live mounts of running containers inside, so overlaying `~/.local` (or `~`) fails with `overlayfs: failed to clone lowerpath`. scratch-monkey detects this (podman's storage root, plus any host mount beneath the source), skips that volume with a warning (in the terminal, or in the GUI banner) and starts the container without it. Overlay specific subdirectories instead (`~/.local/bin`, `~/.local/share/<app>`, `~/.cargo`), or use `ro` for the whole tree. `ro` and `rw` volumes are not affected.
+
 ### Mount points inside the home
 
 The instance home is bind-mounted at `/home/<you>` (or `/root`). If a `volumes` entry targets a path *inside* it that doesn't exist yet (e.g. `~/.cargo:/home/<you>/.cargo:ro`), the container runtime would create that directory as container root. Under rootless podman that is a subuid on the host, so you'd be left with an empty directory in the instance's `home/` that you can't delete, and removing the volume wouldn't remove it.
@@ -371,7 +373,7 @@ The GUI provides:
 - Environment variable, device, and shared volume management
 - Action buttons (enter, enter as root, build, refresh overlay, reset overlay, reset overlay mounts, export cmd, edit files)
 - Live status polling with in-place overlay/image status updates
-- While an operation (start/stop/refresh/reset overlay, etc.) is running, the instance list and detail panels are disabled and a progress indicator shows in the status bar; failures appear both in the status bar and in a red banner at the top of the window; rename, clone, create-instance and create-shared-volume dialogs show "Working..." and lock themselves until the background operation finishes, and report errors inline
+- While an operation (start/stop/refresh/reset overlay, etc.) is running, the instance list and detail panels are disabled and a progress indicator shows in the status bar; failures appear both in the status bar and in a red banner at the top of the window, and warnings (e.g. a skipped overlay volume) in an amber one; a banner shows a single line, with a "Details" button for the full text when it is long, and a dismiss button; rename, clone, create-instance and create-shared-volume dialogs show "Working..." and lock themselves until the background operation finishes, and report errors inline
 
 ---
 
