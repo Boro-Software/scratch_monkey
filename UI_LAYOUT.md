@@ -59,6 +59,8 @@ Set `initial_size` on the `Dialog` (e.g. `initial_size = (760, 0)` in
 `CreateInstanceDialog`); a `0` dimension lets Qt use the content's size hint, and the dialog
 stays resizable. Keep the width under ~1000px so it fits a 1366px-wide screen.
 
+If the content is tall (CreateInstanceDialog's config groups), set a fixed default height (`initial_size = (760, 680)`) and wrap only the tall part in a `ScrollArea` (single Container child, `widget_resizable` defaults to True so it keeps full width); the name field, status labels and buttons stay outside it and remain visible.
+
 ## Disabling UI during async operations
 
 Setting `enabled = False` on a container (e.g. Splitter) disables all children recursively (Qt propagation).
