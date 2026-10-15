@@ -331,7 +331,7 @@ The GUI provides:
 - Environment variable, device, and shared volume management
 - Action buttons (enter, enter as root, build, refresh overlay, reset overlay, export cmd, edit files)
 - Live status polling with in-place overlay/image status updates
-- While an operation (start/stop/refresh/reset overlay, etc.) is running, the instance list and detail panels are disabled and a progress indicator shows in the status bar; failures appear both in the status bar and in a red banner at the top of the window
+- While an operation (start/stop/refresh/reset overlay, etc.) is running, the instance list and detail panels are disabled and a progress indicator shows in the status bar; failures appear both in the status bar and in a red banner at the top of the window; rename, clone, create-instance and create-shared-volume dialogs show "Working..." and lock themselves until the background operation finishes, and report errors inline
 
 ---
 
@@ -428,6 +428,20 @@ Global options (before the command):
 - SELinux labeling disabled for the container (`--security-opt label=disable`)
 - Host networking enabled (`--network=host`)
 - Container hostname is set to `<instance>.<hostname>` for prompt clarity
+
+### Troubleshooting: podman timeouts
+
+Status queries (`list`, GUI refresh/polling) give podman 15 seconds to answer, and instances are
+queried concurrently, so several stuck instances still cost about one timeout in total. Other
+commands that hit a timeout (e.g. `stop`, `build`, `reset`) print `Error: <message>` and exit 1. If
+you see "podman did not respond within 15s", a container lock is probably stuck (any podman command
+that touches that container, even `podman ps -a`, hangs). Quit long-running podman clients (Podman
+Desktop's API service is a common culprit), or run `podman system renumber` / reboot. The CLI
+`list` shows such instances as `unknown` with a warning on stderr. The GUI shows a red banner
+naming the affected instances and a `?` (with the error as a tooltip) in place of the
+running/stopped dot in their rows; the banner and `?` clear on their own once a status poll
+succeeds. Other instances load normally. The GUI window opens immediately and loads instances in
+the background.
 
 ---
 

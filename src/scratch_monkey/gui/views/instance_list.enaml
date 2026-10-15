@@ -10,6 +10,7 @@ from enaml.layout.api import vbox
 from enaml.core.api import Looper
 from enaml.styling import StyleSheet, Style, Setter
 
+from scratch_monkey.gui.dialog_helpers import make_on_done, start_working
 from scratch_monkey.gui.views.create_dialog import CreateInstanceDialog
 
 
@@ -17,10 +18,17 @@ enamldef RenameDialog(Dialog): dlg:
     attr app_model
     attr instance_name : str = ""
     attr _error_msg : str = ""
+    attr working : bool = False
 
     title = "Rename Instance"
 
+    closing ::
+        # Don't let the user dismiss the dialog while the action is in flight.
+        if dlg.working:
+            change['value'].ignore()
+
     Container:
+        enabled << not dlg.working
         VGroup:
             Label:
                 text << f"Rename '{dlg.instance_name}' to:"
@@ -31,16 +39,16 @@ enamldef RenameDialog(Dialog): dlg:
             Label: error_label:
                 text << dlg._error_msg
                 visible << bool(dlg._error_msg)
+            Label: working_label:
+                text = "Working..."
+                visible << dlg.working
             HGroup:
                 PushButton:
                     text = "Rename"
                     enabled << bool(name_field.text.strip()) and name_field.text.strip() != dlg.instance_name
                     clicked ::
-                        err = dlg.app_model.rename_instance(dlg.instance_name, name_field.text.strip())
-                        if err:
-                            dlg._error_msg = err
-                        else:
-                            dlg.close()
+                        start_working(dlg)
+                        dlg.app_model.rename_instance(dlg.instance_name, name_field.text.strip(), make_on_done(dlg))
                 PushButton:
                     text = "Cancel"
                     clicked ::
@@ -51,10 +59,17 @@ enamldef CloneDialog(Dialog): dlg:
     attr app_model
     attr instance_name : str = ""
     attr _error_msg : str = ""
+    attr working : bool = False
 
     title = "Clone Instance"
 
+    closing ::
+        # Don't let the user dismiss the dialog while the action is in flight.
+        if dlg.working:
+            change['value'].ignore()
+
     Container:
+        enabled << not dlg.working
         VGroup:
             Label:
                 text << f"Clone '{dlg.instance_name}' as:"
@@ -64,16 +79,16 @@ enamldef CloneDialog(Dialog): dlg:
             Label: error_label:
                 text << dlg._error_msg
                 visible << bool(dlg._error_msg)
+            Label: working_label:
+                text = "Working..."
+                visible << dlg.working
             HGroup:
                 PushButton:
                     text = "Clone"
                     enabled << bool(name_field.text.strip())
                     clicked ::
-                        err = dlg.app_model.clone_instance(dlg.instance_name, name_field.text.strip())
-                        if err:
-                            dlg._error_msg = err
-                        else:
-                            dlg.close()
+                        start_working(dlg)
+                        dlg.app_model.clone_instance(dlg.instance_name, name_field.text.strip(), make_on_done(dlg))
                 PushButton:
                     text = "Cancel"
                     clicked ::
@@ -95,6 +110,11 @@ enamldef InstanceListPanel(Container): panel:
             Setter:
                 field = "color"
                 value = "#cc2222"
+        Style:
+            style_class = "status-unknown"
+            Setter:
+                field = "color"
+                value = "#cc8800"
 
     constraints = [vbox(scroll, new_btn)]
 
@@ -111,9 +131,11 @@ enamldef InstanceListPanel(Container): panel:
                     PushButton:
                         checkable = True
                         checked << inst.overlay_running
-                        text = "\u25CF"
-                        style_class << ("status-running" if inst.overlay_running else "status-stopped")
-                        tool_tip << ("Running — click to stop" if inst.overlay_running else "Stopped")
+                        # status_error set => podman could not be queried (e.g. stuck
+                        # container lock): show "unknown", not a misleading "stopped".
+                        text << ("?" if inst.status_error else "\u25CF")
+                        style_class << ("status-unknown" if inst.status_error else ("status-running" if inst.overlay_running else "status-stopped"))
+                        tool_tip << (("Status unknown: " + inst.status_error) if inst.status_error else ("Running — click to stop" if inst.overlay_running else "Stopped"))
                         minimum_size = (24, 0)
                         maximum_size = (24, 16777215)
                         toggled ::

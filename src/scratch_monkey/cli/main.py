@@ -42,7 +42,24 @@ from ..shared import (
 )
 
 
-@click.group(invoke_without_command=True, no_args_is_help=True)
+class _PodmanErrorGroup(click.Group):
+    """Click group that reports any uncaught PodmanError as a clean CLI error.
+
+    Query methods (image_exists, container_running, ...) raise PodmanError on
+    timeout, and many commands call them outside a try/except. Without this the
+    user would get a traceback instead of ``Error: <message>`` and exit code 1.
+    Per-command handlers still run first; this only catches what they miss.
+    """
+
+    def invoke(self, ctx: click.Context):
+        try:
+            return super().invoke(ctx)
+        except PodmanError as e:
+            click.echo(f"Error: {e}", err=True)
+            ctx.exit(1)
+
+
+ @click.group(cls=_PodmanErrorGroup, invoke_without_command=True, no_args_is_help=True)
 @click.option(
     "--instances-dir",
     envvar="SCRATCH_MONKEY_INSTANCES_DIR",
@@ -202,9 +219,15 @@ def list_cmd(ctx: click.Context) -> None:
         return
 
     click.echo(f"{'INSTANCE':<20} {'IMAGE':<8} {'OVERLAY':<10} {'DIRECTORY':<40} CONFIG")
+    failed = []
     for info in instances:
-        built = "yes" if info.image_built else "no"
-        overlay = "running" if info.overlay_running else "stopped"
+        built = "unknown" if info.image_error else ("yes" if info.image_built else "no")
+        if info.overlay_error:
+            overlay = "unknown"
+        else:
+            overlay = "running" if info.overlay_running else "stopped"
+        if info.status_error:
+            failed.append(info)
         cfg = info.config
         active_parts = []
         if cfg.wayland:
@@ -227,6 +250,8 @@ def list_cmd(ctx: click.Context) -> None:
         click.echo(
             f"{info.name:<20} {built:<8} {overlay:<10} {str(info.directory):<40} {config_str}"
         )
+    for info in failed:
+        click.echo(f"Warning: status unknown for {info.name!r}: {info.status_error}", err=True)
 
 
 @cli.command()
@@ -431,11 +456,7 @@ def stop(ctx: click.Context, name: str) -> None:
         click.echo(f"Overlay container for {name!r} is already stopped")
         return
 
-    try:
-        runner.stop(overlay_name)
-    except PodmanError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    runner.stop(overlay_name)  # PodmanError is reported by the top-level handler
     click.echo(f"Stopped {name!r}")
 
 

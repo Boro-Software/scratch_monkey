@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import InstanceConfig, load, save, validate_name
-from .container import PodmanRunner
+from .container import PodmanError, PodmanRunner
 
 
 class InstanceError(Exception):
@@ -201,37 +202,102 @@ class InstanceInfo:
     overlay_running: bool
     config: InstanceConfig
     base_image: str | None = None
+    # Set when podman could not be queried (e.g. timed out on a stuck container
+    # lock). The corresponding bool above is then unknown and reported as False.
+    image_error: str | None = None
+    overlay_error: str | None = None
+
+    @property
+    def status_error(self) -> str | None:
+        """First query error for this instance, or None if all queries succeeded."""
+        return self.image_error or self.overlay_error
+
+
+@dataclass
+class StatusResult:
+    """Outcome of the podman status queries for one instance."""
+
+    image_built: bool = False
+    overlay_running: bool = False
+    image_error: str | None = None
+    overlay_error: str | None = None
+
+    @property
+    def status_error(self) -> str | None:
+        return self.image_error or self.overlay_error
+
+
+# Upper bound on concurrent podman queries (each may block for QUERY_TIMEOUT).
+MAX_QUERY_WORKERS = 8
+
+
+def query_statuses(
+    runner: PodmanRunner, targets: list[tuple[str, str]]
+) -> list[StatusResult]:
+    """Query image/overlay state for many instances concurrently.
+
+    targets is a list of (image_name, overlay_container_name). Each query runs
+    in a bounded thread pool so N stuck instances cost about one query timeout
+    rather than N of them. The result list is in the same order as targets;
+    a PodmanError is recorded per instance/query (image_error / overlay_error)
+    and never aborts the others. Other exceptions propagate.
+    """
+    if not targets:
+        return []
+    with ThreadPoolExecutor(max_workers=min(MAX_QUERY_WORKERS, 2 * len(targets))) as pool:
+        futures = [
+            (pool.submit(runner.image_exists, image), pool.submit(runner.container_running, overlay))
+            for image, overlay in targets
+        ]
+        results = []
+        for image_future, overlay_future in futures:
+            result = StatusResult()
+            try:
+                result.image_built = image_future.result()
+            except PodmanError as e:
+                result.image_error = str(e)
+            try:
+                result.overlay_running = overlay_future.result()
+            except PodmanError as e:
+                result.overlay_error = str(e)
+            results.append(result)
+    return results
 
 
 def list_all(instances_dir: Path, runner: PodmanRunner) -> list[InstanceInfo]:
-    """Return info for all instances under instances_dir."""
+    """Return info for all instances under instances_dir (sorted by name).
+
+    Podman queries run concurrently (see query_statuses); config and Dockerfile
+    reads stay sequential.
+    """
     instances_dir = Path(instances_dir)
     if not instances_dir.is_dir():
         return []
 
-    results = []
+    entries = []
     for entry in sorted(instances_dir.iterdir()):
         if not entry.is_dir():
             continue
         if entry.name.startswith("."):
             continue  # skip .shared and other hidden dirs
-        config_path = entry / "scratch.toml"
-        config = load(config_path)
-        image_built = runner.image_exists(entry.name)
+        config = load(entry / "scratch.toml")
         overlay_name = config.overlay_id if config.overlay_id else f"{entry.name}-overlay"
-        overlay_running = runner.container_running(overlay_name)
-        base_image = detect_base_image(entry)
-        results.append(
-            InstanceInfo(
-                name=entry.name,
-                directory=entry,
-                image_built=image_built,
-                overlay_running=overlay_running,
-                config=config,
-                base_image=base_image,
-            )
+        entries.append((entry, config, overlay_name))
+
+    statuses = query_statuses(runner, [(e.name, overlay) for e, _, overlay in entries])
+    return [
+        InstanceInfo(
+            name=entry.name,
+            directory=entry,
+            image_built=status.image_built,
+            overlay_running=status.overlay_running,
+            config=config,
+            base_image=detect_base_image(entry),
+            image_error=status.image_error,
+            overlay_error=status.overlay_error,
         )
-    return results
+        for (entry, config, _), status in zip(entries, statuses)
+    ]
 
 
 def skel_copy(instance: Instance) -> list[str]:

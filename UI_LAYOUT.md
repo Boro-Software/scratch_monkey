@@ -92,6 +92,43 @@ and reintroduces 12+ near-duplicate bindings for no behavioral gain. If a *new* 
 is added outside the Splitter (e.g. a ToolBar Action), it needs its own
 `enabled << not app_model.busy` binding, same as the existing ToolBar actions.
 
+## Threading convention: podman work and list reloads never run on the GUI thread
+
+Any `AppModel` method that touches podman or reloads the instance list must go through
+`_run_async` (directly, or via `_run_then_reload` for "do X, then reload the list"). That
+gives the action the busy flag, the status-bar `ProgressBar`, and the error handling for
+free. Never call `list_all`, `list_shared` or a `PodmanRunner` method from the GUI thread
+(there is deliberately no blocking `refresh()`; use `refresh_async()`).
+
+Dialogs that run such an action use the **`on_done` callback + working-state pattern**
+(see `RenameDialog`/`CloneDialog` in instance_list.enaml, `CreateInstanceDialog`,
+`CreateSharedDialog`):
+```
+enamldef MyDialog(Dialog): dlg:
+    attr working : bool = False
+    attr _error_msg : str = ""
+    closing ::
+        if dlg.working:
+            change['value'].ignore()      # no dismissing mid-operation
+    Container:
+        enabled << not dlg.working        # one binding disables every button/field
+        VGroup:
+            Label:
+                text = "Working..."
+                visible << dlg.working
+            PushButton:
+                clicked ::
+                    start_working(dlg)    # clears _error_msg, sets working
+                    dlg.app_model.some_action(arg, make_on_done(dlg))
+```
+`some_action(..., on_done)` calls `on_done('')` on the GUI thread on success (the helper
+closes the dialog) or `on_done(message)` on failure (shown in `_error_msg`, dialog
+re-enabled). If the app is already busy the model still calls `on_done("Busy ...")`, so the
+dialog is never stuck. Errors for dialog-driven actions go to the dialog only, not the
+red banner. `make_on_done`/`start_working` live in `gui/dialog_helpers.py`; a late success
+after the dialog was destroyed (e.g. Esc, which bypasses `closing`) is ignored there, but a late
+failure is copied to `app_model.error_message` so it reaches the banner.
+
 ## Atom objects and Qt signals
 
 Atom objects do not support `__weakref__`, so `signal.connect(atom_obj.method)` raises
