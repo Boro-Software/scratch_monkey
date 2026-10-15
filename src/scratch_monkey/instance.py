@@ -156,7 +156,35 @@ def delete(name: str, instances_dir: Path, runner: PodmanRunner) -> None:
     if runner.image_exists(name):
         runner.rmi(name)
 
-    shutil.rmtree(instance_dir)
+    _remove_instance_dir(instance_dir, instances_dir, runner)
+
+
+def _remove_instance_dir(instance_dir: Path, instances_dir: Path, runner: PodmanRunner) -> None:
+    """Delete an instance directory, coping with subuid-owned files.
+
+    Container root writes files owned by a subuid on the host (overlay upper
+    directories, mount-point stubs under non-writable subuid-owned parents), so
+    ``shutil.rmtree`` can fail with PermissionError.  Only then fall back to
+    ``podman unshare rm -rf``, after checking that the target really is a direct
+    child of *instances_dir* (never a symlink, never the instances dir itself).
+    """
+    try:
+        shutil.rmtree(instance_dir)
+        return
+    except PermissionError:
+        pass
+
+    resolved_parent = instances_dir.resolve()
+    if (
+        instance_dir.is_symlink()
+        or instance_dir.parent != instances_dir
+        or instance_dir.name in ("", ".", "..")
+        or instance_dir.resolve().parent != resolved_parent
+    ):
+        raise InstanceError(f"Refusing to force-remove {instance_dir}: not an instance directory")
+    runner.unshare_rm_rf([str(instance_dir.resolve())])
+    if instance_dir.exists():
+        raise InstanceError(f"Could not fully remove {instance_dir}")
 
 
 def rename(old_name: str, new_name: str, instances_dir: Path, runner: PodmanRunner) -> Instance:

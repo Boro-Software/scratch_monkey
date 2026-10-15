@@ -27,6 +27,13 @@ from ..mountpoints import find_stale_stubs, prepare_mountpoints, protected_rels
 from ..overlay import OverlayError, ensure_running, exec_shell
 from ..overlay import refresh as overlay_refresh
 from ..overlay import reset as overlay_reset
+from ..overlay_mounts import (
+    OverlayMountError,
+    ensure_overlay_dirs,
+    list_overlay_entries,
+    mount_id,
+    reset_overlays,
+)
 from ..run_args import (
     DEFAULT_BASE_IMAGE,
     FEDORA_IMAGE,
@@ -493,6 +500,71 @@ def reset(ctx: click.Context, name: str, yes: bool) -> None:
         click.echo(f"Overlay container for {name!r} removed.")
 
 
+@cli.command(name="reset-overlays")
+@click.argument("name")
+@click.option(
+    "--mount",
+    "mount",
+    metavar="CONTAINER_PATH",
+    default=None,
+    help="Only reset the overlay mounted at this container path.",
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def reset_overlays_cmd(ctx: click.Context, name: str, mount: str | None, yes: bool) -> None:
+    """Discard container-side changes to overlay-mode volumes.
+
+    Volumes with mode `overlay` show the container a writable copy of a host
+    directory; changes are kept per instance (under <instance>/.overlays) and
+    survive restarts and `refresh`. This deletes them, so the container sees
+    the host originals again. Without --mount every overlay directory of the
+    instance is reset, including leftovers of mounts that are no longer in
+    scratch.toml. A running overlay container is stopped first and left
+    stopped.
+    """
+    instances_dir: Path = ctx.obj["instances_dir"]
+    runner: PodmanRunner = ctx.obj["runner"]
+    inst = _get_instance(instances_dir, name)
+
+    entries = list_overlay_entries(inst)
+    if mount is not None:
+        wanted = mount_id(mount)
+        entries = [e for e in entries if e.mount_id == wanted]
+    if not entries:
+        click.echo(f"No overlay data to reset for {name!r}.")
+        return
+
+    click.echo(f"Overlay data that will be discarded for {name!r}:")
+    for entry in entries:
+        label = entry.container_path or "(mount no longer in scratch.toml)"
+        click.echo(f"  {label}  [{entry.mount_id}]")
+
+    overlay_name = inst.config.overlay_id or f"{name}-overlay"
+    running = runner.container_exists(overlay_name) and runner.container_running(overlay_name)
+    if not yes:
+        question = f"Discard container-side changes for {len(entries)} overlay mount(s) of {name!r}?"
+        if mount is None and any(e.orphan for e in entries):
+            question += " This includes orphaned overlays of mounts no longer in the config."
+        if running:
+            question += " The running overlay container will be stopped."
+        click.confirm(question, abort=True)
+
+    if running:
+        click.echo(f"Stopping overlay container for {name!r}...")
+    try:
+        stopped = reset_overlays(inst, runner, entries, overlay_name)
+    except OverlayMountError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Reset {len(entries)} overlay mount(s) for {name!r}.")
+    if stopped:
+        click.echo(
+            f"The overlay container is stopped; `scratch-monkey enter {name}` or "
+            f"`scratch-monkey start {name}` brings it back."
+        )
+
+
 @cli.command()
 @click.argument("name")
 @click.option(
@@ -588,6 +660,8 @@ def _run_instance(
     # Pre-create home-relative mount points as the current user so the runtime
     # doesn't create them as container root (subuid-owned stubs on the host).
     warnings += prepare_mountpoints(inst, run_args, container_home)
+    # Overlay-mode volumes: upper/work directories must exist (as the user).
+    warnings += ensure_overlay_dirs(inst)
     for w in warnings:
         click.echo(f"Warning: {w}", err=True)
     podman_args = ["--rm", "-it"]

@@ -26,10 +26,30 @@ def generate_overlay_id() -> str:
     return f"sm-{secrets.token_hex(4)}"
 
 
+# Volume modes scratch-monkey knows about.  ``overlay`` is translated into a
+# podman overlay mount (see overlay_mounts.py); anything else, known or not,
+# is handed to podman verbatim.
+VOLUME_MODE_OVERLAY = "overlay"
+KNOWN_VOLUME_MODES = ("ro", "rw", VOLUME_MODE_OVERLAY)
+
+
+def split_volume_spec(spec: str) -> tuple[str, str, str]:
+    """Split ``host:container[:mode]`` into ``(host, container, mode)``.
+
+    ``mode`` is "" when absent.  Anything after a third colon is ignored here
+    (it only matters to podman).  Raises ConfigError on a malformed spec.
+    """
+    validate_volume_spec(spec)
+    parts = spec.split(":")
+    return parts[0], parts[1], parts[2] if len(parts) > 2 else ""
+
+
 def validate_volume_spec(spec: str) -> None:
     """Raise ConfigError if a volume spec has empty host or container path.
 
-    Accepts ``host:container`` or ``host:container:mode`` formats.
+    Accepts ``host:container`` or ``host:container:mode`` formats.  The mode is
+    deliberately not checked here: ``ro``, ``rw`` and ``overlay`` are known, and
+    any other mode is passed through to podman unchanged (which rejects it).
     """
     parts = spec.split(":")
     if len(parts) < 2:
