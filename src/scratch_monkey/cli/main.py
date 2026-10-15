@@ -23,6 +23,7 @@ from ..instance import (
     rename,
     skel_copy,
 )
+from ..mountpoints import find_stale_stubs, prepare_mountpoints, protected_rels
 from ..overlay import OverlayError, ensure_running, exec_shell
 from ..overlay import refresh as overlay_refresh
 from ..overlay import reset as overlay_reset
@@ -31,6 +32,7 @@ from ..run_args import (
     FEDORA_IMAGE,
     PROJECT_DIR,
     build_run_args,
+    container_home_path,
 )
 from ..shared import (
     SharedError,
@@ -564,7 +566,6 @@ def _run_instance(
 ) -> None:
     """Assemble podman args and launch the container."""
     cfg = inst.config
-    user = os.environ.get("USER", "user")
 
     run_image = _determine_run_image(inst, runner, default_base)
 
@@ -582,8 +583,11 @@ def _run_instance(
         return
 
     # Build podman args via shared helper
-    container_home = "/root" if root else f"/home/{user}"
+    container_home = container_home_path(root=root)
     run_args, warnings = build_run_args(instance=inst, is_fedora=fedora, root=root)
+    # Pre-create home-relative mount points as the current user so the runtime
+    # doesn't create them as container root (subuid-owned stubs on the host).
+    warnings += prepare_mountpoints(inst, run_args, container_home)
     for w in warnings:
         click.echo(f"Warning: {w}", err=True)
     podman_args = ["--rm", "-it"]
@@ -593,6 +597,91 @@ def _run_instance(
     podman_args.append(cfg.cmd)
 
     runner.run(podman_args)
+
+
+# ─── Mount-point stub cleanup ─────────────────────────────────────────────────
+
+
+def _stale_stubs_for(inst: Instance) -> list[Path]:
+    """Find empty subuid-owned directories in an instance home that nothing mounts."""
+    # Protect current targets for both the user home and the --root home; the
+    # host-system mount flavour (is_fedora) is irrelevant for paths in the home.
+    variants = [
+        (build_run_args(inst, is_fedora=False, root=root)[0], container_home_path(root=root))
+        for root in (False, True)
+    ]
+    return find_stale_stubs(inst.home_dir, protected_rels(inst, variants))
+
+
+@cli.command(name="prune-mountpoints")
+@click.argument("name", required=False)
+@click.option("--all", "all_instances", is_flag=True, help="Prune every instance.")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def prune_mountpoints(ctx: click.Context, name: str | None, all_instances: bool, yes: bool) -> None:
+    """Remove stale mount-point directories left in an instance's home.
+
+    When a volume targets a path inside the container home that doesn't exist,
+    the container runtime creates it as container root, which shows up on the
+    host as an empty directory owned by a subuid that you can't delete.  This
+    finds such directories (empty, not owned by you, not a current mount
+    target) and removes them with `podman unshare rmdir`, which never removes
+    a non-empty directory.  Asks for confirmation unless --yes is given.
+    """
+    if bool(name) == all_instances:
+        raise click.UsageError("Give an instance NAME or --all (not both).")
+    instances_dir: Path = ctx.obj["instances_dir"]
+    runner: PodmanRunner = ctx.obj["runner"]
+
+    instances: list[Instance] = []
+    if name:
+        instances.append(_get_instance(instances_dir, name))
+    elif instances_dir.is_dir():
+        for entry in sorted(instances_dir.iterdir()):
+            if not entry.is_dir() or entry.name.startswith(".") or not (entry / "scratch.toml").exists():
+                continue
+            try:
+                instances.append(Instance.from_directory(entry))
+            except ConfigError as e:
+                click.echo(f"Warning: skipping {entry.name!r}: {e}", err=True)
+
+    found = [(inst, _stale_stubs_for(inst)) for inst in instances]
+    found = [(inst, stubs) for inst, stubs in found if stubs]
+    if not found:
+        click.echo("No stale mount-point directories found.")
+        return
+
+    total = sum(len(stubs) for _, stubs in found)
+    for inst, stubs in found:
+        click.echo(f"{inst.name}:")
+        for stub in stubs:
+            click.echo(f"  {stub.relative_to(inst.home_dir)}")
+    if not yes:
+        click.confirm(f"Remove {total} empty director{'y' if total == 1 else 'ies'}?", abort=True)
+
+    removed = 0
+    failed: list[str] = []
+    for inst, stubs in found:
+        paths = [str(p) for p in stubs]  # deepest first
+        error = ""
+        try:
+            runner.unshare_rmdir(paths)
+        except PodmanError as e:
+            error = str(e)
+        for path in paths:
+            if os.path.lexists(path):
+                failed.append(path)
+            else:
+                removed += 1
+        if error:
+            click.echo(f"Warning: {inst.name}: {error}", err=True)
+
+    click.echo(f"Removed {removed} director{'y' if removed == 1 else 'ies'}.")
+    if failed:
+        click.echo("Could not remove:", err=True)
+        for path in failed:
+            click.echo(f"  {path}", err=True)
+        sys.exit(1)
 
 
 # ─── Export ───────────────────────────────────────────────────────────────────
