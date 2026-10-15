@@ -1,8 +1,8 @@
-"""Tests for the scratch-monkey CLI gui subcommand."""
+"""Tests for the scratch-monkey top-level ``--gui`` flag."""
 
 from __future__ import annotations
 
-import sys
+import builtins
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,170 +10,123 @@ import pytest
 from click.testing import CliRunner
 
 from scratch_monkey.cli.main import cli
-from scratch_monkey.gui.main import gui_cli
 
 
-class TestGuiCommand:
-    def test_gui_calls_launch_with_default_instances_dir(self):
-        """gui command calls launch with the default instances_dir."""
+def _block_enaml_import(name, *args, _real=builtins.__import__, **kwargs):
+    if name == "enaml":
+        raise ImportError("No module named 'enaml'")
+    return _real(name, *args, **kwargs)
+
+
+class TestGuiFlag:
+    def test_gui_launches_with_default_instances_dir(self):
         runner = CliRunner()
         mock_launch = MagicMock()
         with patch("scratch_monkey.gui.main.launch", mock_launch):
-            result = runner.invoke(cli, ["gui"])
-        assert result.exit_code == 0
-        mock_launch.assert_called_once()
-        call_kwargs = mock_launch.call_args
-        passed_dir = call_kwargs.kwargs.get("instances_dir") or call_kwargs.args[0]
-        assert passed_dir == Path.home() / "scratch-monkey"
-
-    def test_gui_passes_custom_instances_dir(self, tmp_path):
-        """gui command passes --instances-dir override to launch."""
-        runner = CliRunner()
-        mock_launch = MagicMock()
-        custom_dir = str(tmp_path / "my-instances")
-        with patch("scratch_monkey.gui.main.launch", mock_launch):
-            result = runner.invoke(cli, ["--instances-dir", custom_dir, "gui"])
-        assert result.exit_code == 0
-        mock_launch.assert_called_once()
-        call_kwargs = mock_launch.call_args
-        passed_dir = call_kwargs.kwargs.get("instances_dir") or call_kwargs.args[0]
-        assert passed_dir == Path(custom_dir)
-
-    def test_gui_import_error_exits_with_code_1(self):
-        """gui command exits 1 with helpful message when GUI deps are missing."""
-        # CliRunner mixes stderr into output by default in Click 8.x
-        runner = CliRunner()
-
-        class _FailModule:
-            """Simulates a missing GUI module by raising ImportError on attribute access."""
-
-            def __getattr__(self, name: str) -> None:
-                raise ImportError("No module named 'enaml'")
-
-        saved = sys.modules.get("scratch_monkey.gui.main")
-        sys.modules["scratch_monkey.gui.main"] = _FailModule()  # type: ignore[assignment]
-        try:
-            result = runner.invoke(cli, ["gui"])
-        finally:
-            if saved is None:
-                sys.modules.pop("scratch_monkey.gui.main", None)
-            else:
-                sys.modules["scratch_monkey.gui.main"] = saved
-
-        assert result.exit_code == 1
-        assert "GUI dependencies not installed" in result.output
-
-
-class TestGuiCliStandalone:
-    """Tests for gui/main.py:gui_cli() Click command."""
-
-    def test_gui_cli_default_instances_dir(self):
-        """gui_cli uses the default instances dir when no option or env var given."""
-        runner = CliRunner()
-        mock_launch = MagicMock()
-        with patch("scratch_monkey.gui.main.launch", mock_launch):
-            result = runner.invoke(gui_cli, [])
+            result = runner.invoke(cli, ["--gui"])
         assert result.exit_code == 0
         mock_launch.assert_called_once_with(Path.home() / "scratch-monkey")
 
-    def test_gui_cli_instances_dir_option(self, tmp_path):
-        """gui_cli uses --instances-dir when provided."""
+    def test_gui_instances_dir_option_before_flag(self, tmp_path):
         runner = CliRunner()
         mock_launch = MagicMock()
         custom_dir = tmp_path / "custom-instances"
         with patch("scratch_monkey.gui.main.launch", mock_launch):
-            result = runner.invoke(gui_cli, ["--instances-dir", str(custom_dir)])
+            result = runner.invoke(cli, ["--instances-dir", str(custom_dir), "--gui"])
         assert result.exit_code == 0
         mock_launch.assert_called_once_with(custom_dir)
 
-    def test_gui_cli_env_var(self, tmp_path):
-        """gui_cli uses SCRATCH_MONKEY_INSTANCES_DIR env var when no CLI option given."""
+    def test_gui_instances_dir_option_after_flag(self, tmp_path):
+        runner = CliRunner()
+        mock_launch = MagicMock()
+        custom_dir = tmp_path / "custom-instances"
+        with patch("scratch_monkey.gui.main.launch", mock_launch):
+            result = runner.invoke(cli, ["--gui", "--instances-dir", str(custom_dir)])
+        assert result.exit_code == 0
+        mock_launch.assert_called_once_with(custom_dir)
+
+    def test_gui_env_var(self, tmp_path):
         runner = CliRunner()
         mock_launch = MagicMock()
         env_dir = tmp_path / "env-instances"
         with patch("scratch_monkey.gui.main.launch", mock_launch):
-            result = runner.invoke(
-                gui_cli, [], env={"SCRATCH_MONKEY_INSTANCES_DIR": str(env_dir)}
-            )
+            result = runner.invoke(cli, ["--gui"], env={"SCRATCH_MONKEY_INSTANCES_DIR": str(env_dir)})
         assert result.exit_code == 0
         mock_launch.assert_called_once_with(env_dir)
 
-    def test_gui_cli_option_takes_precedence_over_env_var(self, tmp_path):
-        """gui_cli --instances-dir takes precedence over env var."""
+    def test_gui_option_takes_precedence_over_env_var(self, tmp_path):
         runner = CliRunner()
         mock_launch = MagicMock()
         env_dir = tmp_path / "env-instances"
         cli_dir = tmp_path / "cli-instances"
         with patch("scratch_monkey.gui.main.launch", mock_launch):
             result = runner.invoke(
-                gui_cli,
-                ["--instances-dir", str(cli_dir)],
+                cli,
+                ["--instances-dir", str(cli_dir), "--gui"],
                 env={"SCRATCH_MONKEY_INSTANCES_DIR": str(env_dir)},
             )
         assert result.exit_code == 0
         mock_launch.assert_called_once_with(cli_dir)
 
-    def test_gui_cli_help(self):
-        """gui_cli --help returns exit code 0 and shows usage."""
+    def test_help_lists_gui_flag(self):
         runner = CliRunner()
-        result = runner.invoke(gui_cli, ["--help"])
+        result = runner.invoke(cli, ["--help"], terminal_width=200)
         assert result.exit_code == 0
-        assert "Usage:" in result.output
-        assert "--instances-dir" in result.output
+        assert "--gui" in result.output
+        assert "Launch the graphical interface" in result.output
 
-    def test_gui_cli_help_shows_envvar(self):
-        """gui_cli --help displays the env var name due to show_envvar=True."""
-        runner = CliRunner()
-        # Use a wide terminal so the env var name is not line-wrapped mid-word
-        result = runner.invoke(gui_cli, ["--help"], terminal_width=200)
-        assert result.exit_code == 0
-        assert "SCRATCH_MONKEY_INSTANCES_DIR" in result.output
+    def test_no_gui_subcommand(self):
+        assert "gui" not in cli.commands
 
-
-class TestGuiCommandInheritsEnvVar:
-    """Tests for env var inheritance through the parent CLI group."""
-
-    def test_gui_respects_env_var_via_parent_group(self, tmp_path):
-        """gui subcommand inherits SCRATCH_MONKEY_INSTANCES_DIR from parent group."""
+    def test_gui_with_subcommand_is_usage_error(self):
         runner = CliRunner()
         mock_launch = MagicMock()
-        env_dir = str(tmp_path / "env-instances")
         with patch("scratch_monkey.gui.main.launch", mock_launch):
-            result = runner.invoke(
-                cli, ["gui"], env={"SCRATCH_MONKEY_INSTANCES_DIR": env_dir}
-            )
-        assert result.exit_code == 0
-        mock_launch.assert_called_once()
-        call_kwargs = mock_launch.call_args
-        passed_dir = call_kwargs.kwargs.get("instances_dir") or call_kwargs.args[0]
-        assert passed_dir == Path(env_dir)
+            result = runner.invoke(cli, ["--gui", "list"])
+        assert result.exit_code == 2
+        assert "--gui cannot be combined with a command" in result.output
+        mock_launch.assert_not_called()
 
-    def test_gui_help(self):
-        """scratch-monkey gui --help shows usage."""
+    def test_gui_missing_deps_exits_1_with_message(self):
+        """--gui exits 1 with the install hint when enaml cannot be imported."""
         runner = CliRunner()
-        result = runner.invoke(cli, ["gui", "--help"])
+        with patch("builtins.__import__", side_effect=_block_enaml_import):
+            result = runner.invoke(cli, ["--gui"])
+        assert result.exit_code == 1
+        assert "GUI dependencies not installed" in result.output
+        assert "uv tool install --editable '.[gui]'" in result.output
+
+
+class TestNoGuiFlagBehaviour:
+    """invoke_without_command=True must not change existing behaviour."""
+
+    def test_no_args_prints_help_with_usage_exit_code(self):
+        result = CliRunner().invoke(cli, [])
+        assert result.exit_code == 2
+        assert "Usage:" in result.output
+        assert "COMMAND" in result.output
+
+    def test_options_without_command_is_missing_command_error(self):
+        result = CliRunner().invoke(cli, ["--base-image", "foo"])
+        assert result.exit_code == 2
+        assert "Missing command" in result.output
+
+    def test_gui_not_launched_for_regular_commands(self, tmp_path):
+        mock_launch = MagicMock()
+        with patch("scratch_monkey.gui.main.launch", mock_launch):
+            result = CliRunner().invoke(cli, ["--instances-dir", str(tmp_path), "list"])
         assert result.exit_code == 0
-        assert "Launch the scratch-monkey GUI" in result.output
+        mock_launch.assert_not_called()
 
 
 class TestLaunchImportGuard:
     """Tests for launch() import guard behavior."""
 
     def test_launch_exits_on_missing_enaml(self):
-        """launch() exits with code 1 and friendly message when enaml is not installed."""
-        import builtins
+        """launch() exits with code 1 when enaml is not installed."""
+        from scratch_monkey.gui import main as gui_main
 
-        real_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if name == "enaml":
-                raise ImportError("No module named 'enaml'")
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=mock_import):
+        with patch("builtins.__import__", side_effect=_block_enaml_import):
             with pytest.raises(SystemExit) as exc_info:
-                from scratch_monkey.gui import main as gui_main
-
-                # Force re-execution of the function body with the patched import
                 gui_main.launch(Path("/tmp/test"))
         assert exc_info.value.code == 1

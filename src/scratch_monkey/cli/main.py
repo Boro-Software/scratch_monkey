@@ -59,7 +59,7 @@ class _PodmanErrorGroup(click.Group):
             ctx.exit(1)
 
 
-@click.group(cls=_PodmanErrorGroup)
+@click.group(cls=_PodmanErrorGroup, invoke_without_command=True, no_args_is_help=True)
 @click.option(
     "--instances-dir",
     envvar="SCRATCH_MONKEY_INSTANCES_DIR",
@@ -73,13 +73,37 @@ class _PodmanErrorGroup(click.Group):
     show_default=True,
     help="Default base image for new instances.",
 )
+@click.option(
+    "--gui",
+    "launch_gui",
+    is_flag=True,
+    help="Launch the graphical interface (requires the [gui] extra).",
+)
 @click.pass_context
-def cli(ctx: click.Context, instances_dir: str, base_image: str) -> None:
+def cli(
+    ctx: click.Context, instances_dir: str, base_image: str, launch_gui: bool
+) -> None:
     """scratch-monkey: Podman-based dev container manager."""
     ctx.ensure_object(dict)
     ctx.obj["instances_dir"] = Path(instances_dir)
     ctx.obj["base_image"] = base_image
     ctx.obj["runner"] = PodmanRunner()
+
+    if launch_gui:
+        if ctx.invoked_subcommand is not None:
+            raise click.UsageError(
+                f"--gui cannot be combined with a command "
+                f"('{ctx.invoked_subcommand}')."
+            )
+        # Imported lazily so Qt/Enaml are only loaded when requested.
+        from ..gui.main import launch
+
+        launch(ctx.obj["instances_dir"])
+        ctx.exit(0)
+    elif ctx.invoked_subcommand is None:
+        # invoke_without_command=True is only needed for --gui; keep the
+        # original "no command given" behaviour for everything else.
+        raise click.UsageError("Missing command.")
 
 
 def _get_instance(instances_dir: Path, name: str) -> Instance:
@@ -598,25 +622,6 @@ def unexport_cmd(bin: str) -> None:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     click.echo(f"Removed ~/.local/bin/{bin}")
-
-
-# ─── GUI ──────────────────────────────────────────────────────────────────────
-
-
-@cli.command()
-@click.pass_context
-def gui(ctx: click.Context) -> None:
-    """Launch the scratch-monkey GUI."""
-    try:
-        from ..gui.main import launch as gui_launch
-    except ImportError:
-        click.echo(
-            "Error: GUI dependencies not installed.\n"
-            "Install with: uv tool install --editable '.[gui]'",
-            err=True,
-        )
-        sys.exit(1)
-    gui_launch(instances_dir=ctx.obj["instances_dir"])
 
 
 # ─── Shared volumes ───────────────────────────────────────────────────────────
