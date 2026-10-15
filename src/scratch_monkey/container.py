@@ -224,5 +224,11 @@ class PodmanRunner:
         only ever prints a container id on success, so we capture output —
         that way a failure raises PodmanError with real stderr detail
         instead of an empty message.
+
+        An explicit keep-alive command (`sleep infinity`) is required: with
+        --init, catatonit is PID 1 and execs the image's default command, but
+        images such as the FROM-scratch base image define no CMD, so without
+        a command catatonit has nothing to exec and the container dies
+        immediately.  No TTY is needed; interactive sessions use `podman exec -it`.
         """
-        self._run(["run", "-dit", "--init", "--name", name, *run_args, image], capture=True)
+        self._run(["run", "-d", "--init", "--name", name, *run_args, image, "sleep", "infinity"], capture=True)
