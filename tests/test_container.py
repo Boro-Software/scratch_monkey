@@ -298,7 +298,7 @@ class TestTimeouts:
         proc.kill.side_effect = lambda: state.update(killed=True)
 
         def communicate(input=None, timeout=None):
-            if state["terminated"] and not ignores_sigterm:
+            if state["killed"] or (state["terminated"] and not ignores_sigterm):
                 return ("", "")
             raise subprocess.TimeoutExpired("podman", timeout)
 
@@ -331,11 +331,19 @@ class TestTimeouts:
         order = MagicMock()
         order.attach_mock(proc.terminate, "terminate")
         order.attach_mock(proc.kill, "kill")
-        order.attach_mock(proc.wait, "wait")
+        order.attach_mock(proc.communicate, "communicate")
         with patch("subprocess.Popen", return_value=proc):
             with pytest.raises(PodmanError, match="did not respond"):
                 runner._run(["inspect", "c"], timeout=5)
-        assert [c[0] for c in order.mock_calls] == ["terminate", "kill", "wait"]
+        # communicate() after kill drains/closes the pipes (a bare wait() would not)
+        assert [c[0] for c in order.mock_calls] == [
+            "communicate",  # initial, times out
+            "terminate",
+            "communicate",  # SIGTERM grace, times out
+            "kill",
+            "communicate",  # reap + close pipes
+        ]
+        proc.wait.assert_not_called()
 
     def test_timeout_path_returns_completed_process(self, runner):
         with patch("subprocess.Popen", return_value=make_proc(0, "out", "err")) as popen:

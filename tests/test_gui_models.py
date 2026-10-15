@@ -1055,7 +1055,7 @@ class TestRunAsync:
                 done.set()
 
             app._run_async("Working...", work, on_success)
-            done.wait(timeout=2)
+            _wait(done)
 
         assert results == [42]
         assert app.busy is False
@@ -1079,7 +1079,7 @@ class TestRunAsync:
                 done.set()
 
             app._run_async("Working...", work, on_error=on_error)
-            done.wait(timeout=2)
+            _wait(done)
 
         assert errors == ["boom"]
         assert app.busy is False
@@ -1101,7 +1101,7 @@ class TestRunAsync:
                 raise RuntimeError("something broke")
 
             app._run_async("Working...", work)
-            done.wait(timeout=2)
+            _wait(done)
 
         assert "something broke" in app.status_message
         assert app.busy is False
@@ -1137,7 +1137,7 @@ class TestRunAsync:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
             app._run_async("Refreshing 'foo'...", first_work, on_success=lambda r: None)
-            gate.wait(timeout=2)
+            _wait(gate, "first_work start")
             assert app.busy is True
 
             second_called = []
@@ -1148,7 +1148,7 @@ class TestRunAsync:
             assert "Refreshing 'foo'..." in app.status_message
 
             release.set()
-            done.wait(timeout=2)
+            _wait(done)
 
         assert app.busy is False
 
@@ -1170,7 +1170,7 @@ class TestRunAsync:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
             app._run_async("First op...", failing_work)
-            done.wait(timeout=2)
+            _wait(done)
 
         assert "first failure" in app.error_message
 
@@ -1182,7 +1182,7 @@ class TestRunAsync:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call2):
             app._run_async("Second op...", lambda: None, on_success=lambda r: None)
-            done2.wait(timeout=2)
+            _wait(done2)
 
         assert app.error_message == ""
 
@@ -1207,7 +1207,7 @@ class TestRunAsync:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
             app._run_async("Working...", failing_work, on_error=on_error)
-            done.wait(timeout=2)
+            _wait(done)
 
         assert "disk on fire" in app.error_message
         assert app.status_message == "Custom: disk on fire"
@@ -1233,7 +1233,7 @@ class TestRunAsync:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
             app.delete_instance("todelete")
-            done.wait(timeout=2)
+            _wait(done)
 
         assert app.busy is False
         assert app.selected_instance == ""
@@ -1265,7 +1265,7 @@ class TestRunAsync:
             patch("scratch_monkey.gui.models.overlay_reset", return_value=True),
         ):
             app.reset_overlay("myinst")
-            done.wait(timeout=2)
+            _wait(done)
 
         assert app.busy is False
         assert "removed" in app.status_message
@@ -1295,7 +1295,7 @@ class TestRunAsync:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
             app.stop_instance("myinst")
-            done.wait(timeout=2)
+            _wait(done)
 
         assert app.busy is False
         assert "Stopped" in app.status_message
@@ -1335,13 +1335,62 @@ class TestRunAsync:
             patch("scratch_monkey.gui.models.overlay_ensure_running") as mock_ensure,
         ):
             app.start_instance("myinst")
-            done.wait(timeout=2)
+            _wait(done)
 
         mock_ensure.assert_called_once()
         assert app.busy is False
         assert "Started" in app.status_message
         assert app.instances is instances_before
         assert inst.overlay_running is True
+
+    @pytest.mark.parametrize(
+        "method,target,expected",
+        [
+            ("start_instance", "overlay_ensure_running", "Error starting 'myinst': podman broke"),
+            ("stop_instance", None, "Error stopping 'myinst': podman broke"),
+        ],
+    )
+    def test_start_stop_error_sets_status_before_polling(
+        self, tmp_path, method, target, expected
+    ):
+        """on_error sets status_message first, then polls (poll thread must not race it)."""
+        import contextlib
+        import threading
+        from unittest.mock import patch
+
+        from scratch_monkey.container import PodmanError
+
+        app, instances_dir, project_dir = self._make_app(tmp_path)
+        with patch("scratch_monkey.gui.models.PROJECT_DIR", project_dir):
+            create_sync(app, "myinst")
+
+        done = threading.Event()
+        seen_at_poll: list[str] = []
+
+        def sync_deferred_call(fn):
+            fn()
+            done.set()
+
+        with (
+            patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
+            patch.object(
+                AppModel, "poll_status", lambda self: seen_at_poll.append(self.status_message)
+            ),
+        ):
+            if target:
+                ctx = patch(
+                    f"scratch_monkey.gui.models.{target}", side_effect=PodmanError("podman broke")
+                )
+            else:
+                app._runner.stop.side_effect = PodmanError("podman broke")
+                ctx = contextlib.nullcontext()
+            with ctx:
+                getattr(app, method)("myinst")
+                _wait(done)
+
+        assert app.busy is False
+        assert app.status_message == expected
+        assert seen_at_poll == [expected]
 
     def test_start_instance_not_found(self, tmp_path):
         """start_instance sets error status for nonexistent instance."""
@@ -1366,7 +1415,7 @@ class TestRunAsync:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
             app.refresh_async()
-            done.wait(timeout=2)
+            _wait(done)
 
         assert app.busy is False
         assert "Loaded" in app.status_message
@@ -1378,16 +1427,15 @@ class TestRunAsync:
 
         app, _, project_dir = self._make_app(tmp_path)
         observed_status = []
-        gate = threading.Event()
+        done = threading.Event()
 
         def work():
             observed_status.append(app.status_message)
-            gate.set()
             return None
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=lambda fn: fn()):
-            app._run_async("Processing...", work, on_success=lambda r: None)
-            gate.wait(timeout=2)
+            app._run_async("Processing...", work, on_success=lambda r: done.set())
+            _wait(done)
 
         assert observed_status == ["Processing..."]
 
@@ -1398,16 +1446,15 @@ class TestRunAsync:
 
         app, _, project_dir = self._make_app(tmp_path)
         observed_busy = []
-        gate = threading.Event()
+        done = threading.Event()
 
         def work():
             observed_busy.append(app.busy)
-            gate.set()
             return None
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=lambda fn: fn()):
-            app._run_async("Working...", work, on_success=lambda r: None)
-            gate.wait(timeout=2)
+            app._run_async("Working...", work, on_success=lambda r: done.set())
+            _wait(done)
 
         assert observed_busy == [True]
         assert app.busy is False
@@ -1441,7 +1488,7 @@ class TestRunAsync:
             patch("scratch_monkey.gui.models.overlay_reset", return_value=False),
         ):
             app.reset_overlay("myinst")
-            done.wait(timeout=2)
+            _wait(done)
 
         assert app.busy is False
         assert "No overlay container found" in app.status_message
@@ -1469,7 +1516,7 @@ class TestRunAsync:
             patch("scratch_monkey.gui.models.delete", side_effect=InstanceError("permission denied")),
         ):
             app.delete_instance("myinst")
-            done.wait(timeout=2)
+            _wait(done)
 
         assert app.busy is False
         assert "permission denied" in app.status_message
@@ -1497,12 +1544,15 @@ class TestRunAsync:
         with (
             patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call),
             patch("scratch_monkey.gui.models.overlay_reset", side_effect=PodmanError("podman broke")),
+            # Don't start a real poll thread (it would outlive the test).
+            patch.object(AppModel, "poll_status") as poll,
         ):
             app.reset_overlay("myinst")
-            done.wait(timeout=2)
+            _wait(done)
 
         assert app.busy is False
         assert "podman broke" in app.status_message
+        poll.assert_called_once()
         # Verify instances list was not replaced (poll_status, not refresh)
         assert app.instances is instances_before
 
@@ -1533,7 +1583,7 @@ class TestRunAsync:
             patch("scratch_monkey.gui.models.overlay_refresh") as mock_refresh,
         ):
             app.refresh_overlay("myinst")
-            done.wait(timeout=2)
+            _wait(done)
 
         mock_refresh.assert_called_once()
         call_args = mock_refresh.call_args
@@ -1572,7 +1622,7 @@ class TestRunAsync:
             patch("scratch_monkey.gui.models.detect_base_image", return_value=None),
         ):
             app.refresh_overlay("myinst")
-            done.wait(timeout=2)
+            _wait(done)
 
         mock_refresh.assert_called_once()
         call_args = mock_refresh.call_args
@@ -1612,12 +1662,14 @@ class TestRunAsync:
                 "scratch_monkey.gui.models.overlay_refresh",
                 side_effect=PodmanError("podman broke"),
             ),
+            patch.object(AppModel, "poll_status") as poll,
         ):
             app.refresh_overlay("myinst")
-            done.wait(timeout=2)
+            _wait(done)
 
         assert app.busy is False
         assert "podman broke" in app.status_message
+        poll.assert_called_once()
         # Verify instances list was not replaced (poll_status, not refresh)
         assert app.instances is instances_before
 
@@ -1743,7 +1795,7 @@ class TestPollStatus:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
             app.poll_status()
-            done.wait(timeout=2)
+            _wait(done)
 
         assert inst.overlay_running is True
         assert app.instances is instances_before
@@ -1772,7 +1824,7 @@ class TestPollStatus:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
             app.poll_status()
-            done.wait(timeout=2)
+            _wait(done)
 
         assert inst.image_built is True
         assert app._polling is False
@@ -1820,7 +1872,7 @@ class TestPollStatus:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
             app.poll_status()
-            done.wait(timeout=2)
+            _wait(done)
 
         assert inst.dirty is True
         assert inst.overlay_running is True
@@ -1845,7 +1897,7 @@ class TestPollStatus:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
             app.poll_status()
-            done.wait(timeout=2)
+            _wait(done)
 
         assert app._polling is False
 
@@ -1994,7 +2046,7 @@ class TestInitialLoad:
 
         with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
             app_call()
-            assert done.wait(timeout=2)
+            _wait(done)
 
     def test_init_makes_no_podman_calls(self, tmp_path):
         from unittest.mock import MagicMock
@@ -2107,6 +2159,153 @@ class TestInitialLoad:
         by_name = {i.name: i for i in app.instances}
         assert by_name["alpha"].overlay_running is False  # unchanged
         assert by_name["beta"].overlay_running is True
+
+
+class TestPollStatusErrors:
+    """poll_status sets/clears per-instance status_error and the load-error banner."""
+
+    def _make_dir(self, tmp_path, names):
+        from scratch_monkey.config import save
+
+        instances_dir = tmp_path / "scratch-monkey"
+        instances_dir.mkdir()
+        for n in names:
+            d = instances_dir / n
+            d.mkdir()
+            (d / "Dockerfile").write_text("FROM scratch_monkey\n")
+            save(d / "scratch.toml", InstanceConfig())
+        return instances_dir
+
+    def _sync_call(self, app_call):
+        import threading
+        from unittest.mock import patch
+
+        done = threading.Event()
+
+        def sync_deferred_call(fn):
+            fn()
+            done.set()
+
+        with patch("scratch_monkey.gui.models.deferred_call", side_effect=sync_deferred_call):
+            app_call()
+            _wait(done)
+
+    def _loaded(self, tmp_path, names=("alpha", "beta", "gamma"), stuck=()):
+        """An app whose initial load saw `stuck` instances' overlay queries time out."""
+        from unittest.mock import MagicMock
+
+        from scratch_monkey.container import PodmanError
+
+        runner = MagicMock()
+        runner.image_exists.return_value = True
+
+        def running(name):
+            if name.removesuffix("-overlay") in stuck:
+                raise PodmanError(f"timed out on {name}")
+            return False
+
+        runner.container_running.side_effect = running
+        app = AppModel(instances_dir=self._make_dir(tmp_path, names), runner=runner)
+        self._sync_call(lambda: app.refresh_async("Loading instances..."))
+        return app, runner
+
+    def test_poll_failure_sets_status_error_on_right_instance(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from scratch_monkey.container import PodmanError
+
+        app, runner = self._loaded(tmp_path)
+        assert all(not i.status_error for i in app.instances)
+
+        def running(name):
+            if name == "beta-overlay":
+                raise PodmanError("timed out on beta")
+            return name == "gamma-overlay"
+
+        runner.container_running = MagicMock(side_effect=running)
+        self._sync_call(app.poll_status)
+        by_name = {i.name: i for i in app.instances}
+        assert by_name["alpha"].status_error == ""
+        assert by_name["alpha"].overlay_running is False
+        assert "timed out on beta" in by_name["beta"].status_error
+        assert by_name["beta"].overlay_running is False  # last known value kept
+        assert by_name["gamma"].status_error == ""
+        assert by_name["gamma"].overlay_running is True
+
+    def test_poll_failure_keeps_last_known_state(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from scratch_monkey.container import PodmanError
+
+        app, runner = self._loaded(tmp_path, names=("alpha",))
+        app.instances[0].overlay_running = True
+        runner.container_running = MagicMock(side_effect=PodmanError("stuck"))
+        self._sync_call(app.poll_status)
+        assert app.instances[0].overlay_running is True
+        assert app.instances[0].status_error == "stuck"
+
+    def test_later_successful_poll_clears_status_error(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        app, runner = self._loaded(tmp_path, stuck=("beta",))
+        by_name = {i.name: i for i in app.instances}
+        assert "timed out on beta-overlay" in by_name["beta"].status_error
+
+        runner.container_running = MagicMock(return_value=True)
+        self._sync_call(app.poll_status)
+        assert all(i.status_error == "" for i in app.instances)
+        assert all(i.overlay_running for i in app.instances)
+
+    def test_banner_cleared_when_all_failing_instances_recover(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        app, runner = self._loaded(tmp_path, stuck=("alpha", "beta"))
+        assert app.error_message.startswith("Could not query podman for: ")
+
+        runner.container_running = MagicMock(return_value=False)
+        self._sync_call(app.poll_status)
+        assert app.error_message == ""
+
+    def test_banner_kept_while_any_instance_still_failing(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from scratch_monkey.container import PodmanError
+
+        app, runner = self._loaded(tmp_path, stuck=("alpha", "beta"))
+        banner = app.error_message
+
+        def running(name):
+            if name == "beta-overlay":
+                raise PodmanError("still stuck")
+            return False
+
+        runner.container_running = MagicMock(side_effect=running)
+        self._sync_call(app.poll_status)
+        assert app.instances[0].status_error == ""
+        assert "still stuck" in app.instances[1].status_error
+        assert app.error_message == banner
+
+    def test_unrelated_banner_not_cleared_by_poll(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        app, runner = self._loaded(tmp_path, stuck=("alpha",))
+        app.error_message = "Something else went wrong"
+
+        runner.container_running = MagicMock(return_value=False)
+        self._sync_call(app.poll_status)
+        assert app.instances[0].status_error == ""
+        assert app.error_message == "Something else went wrong"
+
+    def test_poll_does_not_set_banner(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from scratch_monkey.container import PodmanError
+
+        app, runner = self._loaded(tmp_path)
+        runner.container_running = MagicMock(side_effect=PodmanError("stuck"))
+        self._sync_call(app.poll_status)
+        assert app.error_message == ""
+        assert all(i.status_error == "stuck" for i in app.instances)
 
 
 # ── dialog-facing actions: on_done callbacks, worker-thread execution ───────
@@ -2475,7 +2674,8 @@ class TestImageLookupOffGuiThread:
 
 class TestDialogHelpers:
     class FakeDialog:
-        def __init__(self, destroyed=False):
+        def __init__(self, destroyed=False, app_model=None):
+            self.app_model = app_model
             self.working = False
             self._error_msg = ""
             self.is_destroyed = destroyed
@@ -2514,3 +2714,43 @@ class TestDialogHelpers:
         make_on_done(dlg)("err")
         assert dlg.closed == 0
         assert dlg._error_msg == ""
+
+    def test_late_error_after_destroy_reaches_banner(self):
+        """Esc can destroy the dialog mid-operation; the failure must not be lost."""
+        from scratch_monkey.gui.dialog_helpers import make_on_done
+
+        app_model = AppModel(instances_dir=Path("/nonexistent"), runner=object())
+        dlg = self.FakeDialog(destroyed=True, app_model=app_model)
+        make_on_done(dlg)("boom")
+        assert app_model.error_message == "boom"
+        assert dlg.closed == 0
+
+    def test_late_success_after_destroy_leaves_banner_alone(self):
+        from scratch_monkey.gui.dialog_helpers import make_on_done
+
+        app_model = AppModel(instances_dir=Path("/nonexistent"), runner=object())
+        app_model.error_message = "earlier"
+        dlg = self.FakeDialog(destroyed=True, app_model=app_model)
+        make_on_done(dlg)("")
+        assert app_model.error_message == "earlier"
+
+    def test_app_model_captured_when_closure_built(self):
+        """The model is read at build time, not from a possibly-dead dialog later."""
+        from scratch_monkey.gui.dialog_helpers import make_on_done
+
+        app_model = AppModel(instances_dir=Path("/nonexistent"), runner=object())
+        dlg = self.FakeDialog(app_model=app_model)
+        on_done = make_on_done(dlg)
+        dlg.is_destroyed = True
+        del dlg.app_model
+        on_done("late failure")
+        assert app_model.error_message == "late failure"
+
+    def test_error_while_alive_does_not_touch_banner(self):
+        from scratch_monkey.gui.dialog_helpers import make_on_done
+
+        app_model = AppModel(instances_dir=Path("/nonexistent"), runner=object())
+        dlg = self.FakeDialog(app_model=app_model)
+        make_on_done(dlg)("boom")
+        assert dlg._error_msg == "boom"
+        assert app_model.error_message == ""

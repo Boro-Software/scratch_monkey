@@ -23,7 +23,7 @@ except ImportError:
     def deferred_call(fn): fn()  # fallback for tests without enaml app
 
 from ..config import InstanceConfig, save
-from ..container import PodmanError, PodmanRunner
+from ..container import PodmanRunner
 from ..export import ExportError
 from ..export import export_command as export_command_fn
 from ..instance import (
@@ -35,6 +35,7 @@ from ..instance import (
     detect_base_image,
     is_fedora_based,
     list_all,
+    query_statuses,
     rename,
     skel_copy,
 )
@@ -310,6 +311,10 @@ class AppModel(Atom):
     # Completion status of a post-editor config reload that was requested while
     # busy ("" = none pending); honored as soon as the in-flight operation ends.
     _reload_pending = Str("")
+    # Text of the "Could not query podman for: ..." banner last set by
+    # _set_instances ("" = none), so poll_status can clear exactly that banner
+    # once the failing instances answer again.
+    _load_error_banner = Str("")
 
     def __init__(self, instances_dir: Path, runner: PodmanRunner | None = None) -> None:
         super().__init__()
@@ -496,6 +501,9 @@ class AppModel(Atom):
         if failed:
             details = "; ".join(f"{m.name} ({m.status_error})" for m in failed)
             self.error_message = f"Could not query podman for: {details}"
+            self._load_error_banner = self.error_message
+        else:
+            self._load_error_banner = ""
 
     def refresh_async(self, status: str = "Refreshing...", done_status: str = "") -> None:
         """Reload all instances from disk in a background thread.
@@ -513,6 +521,16 @@ class AppModel(Atom):
 
         self._run_async(status, self._load_snapshot, on_success, on_error)
 
+    def _clear_load_error_banner(self) -> None:
+        """Drop the "Could not query podman" banner once no instance has a status error."""
+        if (
+            self._load_error_banner
+            and self.error_message == self._load_error_banner
+            and not any(m.status_error for m in self.instances)
+        ):
+            self.error_message = ""
+            self._load_error_banner = ""
+
     def poll_status(self) -> None:
         """Lightweight status poller — updates overlay_running/image_built in-place."""
         if self.busy or self._polling:
@@ -528,30 +546,27 @@ class AppModel(Atom):
 
         def _poll():
             try:
-                results = {}
-                for name, overlay_name in snapshot:
-                    try:
-                        running = runner.container_running(overlay_name)
-                        built = runner.image_exists(name)
-                    except PodmanError:
-                        # Timed out / failed for this instance: keep its last
-                        # known state and move on to the others.
-                        continue
-                    results[name] = (running, built)
+                # Concurrent, so N stuck instances cost one timeout, not N.
+                statuses = query_statuses(runner, snapshot)
+                results = {name: st for (name, _), st in zip(snapshot, statuses)}
             except Exception:
                 deferred_call(lambda: setattr(self, '_polling', False))
                 return
 
             def _apply():
                 for inst in self.instances:
-                    pair = results.get(inst.name)
-                    if pair is None:
+                    res = results.get(inst.name)
+                    if res is None:
                         continue
-                    running, built = pair
-                    if inst.overlay_running != running:
-                        inst.overlay_running = running
-                    if inst.image_built != built:
-                        inst.image_built = built
+                    # A failed query leaves that field at its last known value.
+                    if res.image_error is None and inst.image_built != res.image_built:
+                        inst.image_built = res.image_built
+                    if res.overlay_error is None and inst.overlay_running != res.overlay_running:
+                        inst.overlay_running = res.overlay_running
+                    status_error = res.status_error or ""
+                    if inst.status_error != status_error:
+                        inst.status_error = status_error
+                self._clear_load_error_banner()
                 self._polling = False
 
             deferred_call(_apply)
@@ -619,8 +634,8 @@ class AppModel(Atom):
             self.status_message = f"Started {name!r}"
 
         def on_error(exc):
-            self.poll_status()
             self.status_message = f"Error starting {name!r}: {exc}"
+            self.poll_status()
 
         self._run_async(f"Starting {name!r}...", work, on_success, on_error)
 
@@ -643,8 +658,8 @@ class AppModel(Atom):
             self.status_message = f"Stopped {name!r}"
 
         def on_error(exc):
-            self.poll_status()
             self.status_message = f"Error stopping {name!r}: {exc}"
+            self.poll_status()
 
         self._run_async(f"Stopping {name!r}...", work, on_success, on_error)
 
@@ -671,8 +686,8 @@ class AppModel(Atom):
                 self.status_message = f"No overlay container found for {name!r}"
 
         def on_error(exc):
-            self.poll_status()
             self.status_message = f"Error: {exc}"
+            self.poll_status()
 
         self._run_async(f"Resetting overlay for {name!r}...", work, on_success, on_error)
 
@@ -701,8 +716,8 @@ class AppModel(Atom):
             self.status_message = f"Refreshed {name!r} (installs preserved)"
 
         def on_error(exc):
-            self.poll_status()
             self.status_message = f"Error refreshing {name!r}: {exc}"
+            self.poll_status()
 
         self._run_async(f"Refreshing {name!r}...", work, on_success, on_error)
 

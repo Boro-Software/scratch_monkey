@@ -349,13 +349,17 @@ Global options (before the command):
 
 ### Troubleshooting: podman timeouts
 
-Status queries (`list`, GUI refresh/polling) give podman 15 seconds to answer. If you see
-"podman did not respond within 15s", a container lock is probably stuck (any podman command that
-touches that container, even `podman ps -a`, hangs). Quit long-running podman clients (Podman
+Status queries (`list`, GUI refresh/polling) give podman 15 seconds to answer, and instances are
+queried concurrently, so several stuck instances still cost about one timeout in total. Other
+commands that hit a timeout (e.g. `stop`, `build`, `reset`) print `Error: <message>` and exit 1. If
+you see "podman did not respond within 15s", a container lock is probably stuck (any podman command
+that touches that container, even `podman ps -a`, hangs). Quit long-running podman clients (Podman
 Desktop's API service is a common culprit), or run `podman system renumber` / reboot. The CLI
-`list` shows such instances as `unknown` with a warning on stderr, and the GUI shows a red banner
-naming the affected instances; other instances load normally. The GUI window opens immediately and
-loads instances in the background.
+`list` shows such instances as `unknown` with a warning on stderr. The GUI shows a red banner
+naming the affected instances and a `?` (with the error as a tooltip) in place of the
+running/stopped dot in their rows; the banner and `?` clear on their own once a status poll
+succeeds. Other instances load normally. The GUI window opens immediately and loads instances in
+the background.
 
 ---
 

@@ -261,6 +261,66 @@ class TestListAll:
         with pytest.raises(RuntimeError):
             list_all(instances_dir, mock_runner)
 
+    def test_results_sorted_and_attributed_under_concurrency(
+        self, instances_dir, project_dir, mock_runner
+    ):
+        """Each instance gets its own results/errors regardless of completion order."""
+        from scratch_monkey.container import PodmanError
+
+        names = [f"inst{i:02d}" for i in range(12)]
+        for name in reversed(names):  # creation order must not matter
+            create(name, instances_dir, "scratch_monkey", project_dir)
+
+        def image_exists(name):
+            if name == "inst03":
+                raise PodmanError("image timeout inst03")
+            return int(name[-2:]) % 2 == 0
+
+        def container_running(name):
+            if name == "inst05-overlay":
+                raise PodmanError("overlay timeout inst05")
+            return int(name[4:6]) % 3 == 0
+
+        mock_runner.image_exists.side_effect = image_exists
+        mock_runner.container_running.side_effect = container_running
+        result = list_all(instances_dir, mock_runner)
+
+        assert [r.name for r in result] == names
+        for r in result:
+            n = int(r.name[-2:])
+            if r.name == "inst03":
+                assert r.image_error == "image timeout inst03"
+                assert r.image_built is False
+            else:
+                assert r.image_error is None
+                assert r.image_built is (n % 2 == 0)
+            if r.name == "inst05":
+                assert r.overlay_error == "overlay timeout inst05"
+                assert r.overlay_running is False
+            else:
+                assert r.overlay_error is None
+                assert r.overlay_running is (n % 3 == 0)
+
+    def test_stuck_instances_are_queried_concurrently(
+        self, instances_dir, project_dir, mock_runner
+    ):
+        """Three queries only complete if all three are in flight at once."""
+        import threading
+
+        from scratch_monkey.container import PodmanError
+
+        for name in ("a", "b", "c"):
+            create(name, instances_dir, "scratch_monkey", project_dir)
+        barrier = threading.Barrier(3, timeout=2)
+
+        def image_exists(name):
+            barrier.wait()  # BrokenBarrierError (not PodmanError) if serialized
+            raise PodmanError(f"stuck {name}")
+
+        mock_runner.image_exists.side_effect = image_exists
+        result = list_all(instances_dir, mock_runner)
+        assert [r.image_error for r in result] == ["stuck a", "stuck b", "stuck c"]
+
 
 # ─── skel_copy ────────────────────────────────────────────────────────────────
 

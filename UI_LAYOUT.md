@@ -125,8 +125,9 @@ enamldef MyDialog(Dialog): dlg:
 closes the dialog) or `on_done(message)` on failure (shown in `_error_msg`, dialog
 re-enabled). If the app is already busy the model still calls `on_done("Busy ...")`, so the
 dialog is never stuck. Errors for dialog-driven actions go to the dialog only, not the
-red banner. `make_on_done`/`start_working` live in `gui/dialog_helpers.py`; a late callback
-after the dialog was destroyed is ignored there.
+red banner. `make_on_done`/`start_working` live in `gui/dialog_helpers.py`; a late success
+after the dialog was destroyed (e.g. Esc, which bypasses `closing`) is ignored there, but a late
+failure is copied to `app_model.error_message` so it reaches the banner.
 
 ## Atom objects and Qt signals
 
