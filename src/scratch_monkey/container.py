@@ -142,6 +142,21 @@ class PodmanRunner:
             return ""
         return result.stdout.strip()
 
+    def container_mount_destinations(self, name: str) -> list[str]:
+        """Return the destination paths of every mount of the named container.
+
+        Works for stopped containers too.  Returns [] if the container does not
+        exist or cannot be inspected.
+        """
+        result = self._run(
+            ["inspect", name, "--format", "{{range .Mounts}}{{.Destination}}\n{{end}}"],
+            check=False,
+            timeout=QUERY_TIMEOUT,
+        )
+        if result.returncode != 0:
+            return []
+        return [line for line in result.stdout.splitlines() if line.strip()]
+
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
     def run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -194,6 +209,17 @@ class PodmanRunner:
     def rmi(self, image: str) -> None:
         """Remove an image."""
         self._run(["rmi", image])
+
+    def unshare_rmdir(self, paths: list[str]) -> None:
+        """Run `podman unshare rmdir -- <paths>`.
+
+        Inside the user namespace the caller owns files that belong to a subuid
+        on the host, so this can remove empty directories created by container
+        root.  ``rmdir`` never removes a non-empty directory.  Paths are
+        processed in order (pass deepest first); raises PodmanError if any
+        removal failed — the others are still attempted.
+        """
+        self._run(["unshare", "rmdir", "--", *paths])
 
     def tag(self, source: str, target: str) -> None:
         """Tag an image with a new name."""

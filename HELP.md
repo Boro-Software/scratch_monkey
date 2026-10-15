@@ -532,6 +532,20 @@ scratch-monkey reset myproject
 Removes the overlay container, discarding all changes outside home/.
 Next `enter` creates a fresh overlay from the image.
 
+### Mount points inside home
+
+A `volumes` entry whose container path is inside the container home (e.g.
+`/home/me/.cargo`) needs a mount-point directory. If it is missing, the
+runtime creates it as container root, which on the host is an undeletable
+subuid-owned empty directory in the instance's `home/`. Before any container
+is created, scratch-monkey creates such directories itself, as your user,
+and records them in `<instance>/.mountpoints.json`. Recorded directories that
+are no longer mount targets are removed on the next container creation if
+(and only if) they are empty. For stubs left by earlier versions run
+`scratch-monkey prune-mountpoints <name>` (or `--all`); it uses
+`podman unshare rmdir`, so non-empty directories are never removed. Stubs for
+targets outside home live in the writable layer and are `rmdir`-ed by `refresh`.
+
 ### Overlay ID
 
 Each overlay container gets a unique ID (e.g., `sm-a1b2c3d4`) stored in
@@ -784,6 +798,7 @@ scratch-monkey [--instances-dir DIR] [--base-image IMAGE] COMMAND
 | `start <name>` | Start overlay container (creates if needed, enables overlay mode) |
 | `stop <name>` | Stop overlay container |
 | `reset <name> [--yes]` | Remove overlay container |
+| `prune-mountpoints <name> \| --all [--yes]` | Remove stale empty mount-point dirs (owned by a subuid) from an instance home |
 | `export <name> <cmd> [bin]` | Export command to ~/.local/bin |
 | `unexport <bin>` | Remove exported command |
 | `share create <name>` | Create a shared volume |
