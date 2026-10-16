@@ -107,20 +107,55 @@ e.g. an error banner above a Splitter — don't rely on `visible` alone to colla
 size; the "fixed height to prevent resize" trick from the status bar above assumed a
 *constant* height, which is wrong here since we want *zero* height when hidden.
 
-**Pattern** (from main_window.enaml's error banner, sits above `splitter` in
+**Pattern** (from main_window.enaml's message banner, sits above `splitter` in
 `vbox(banner, splitter, status_bar)`):
 ```
 HGroup: banner:
-    visible << bool(app_model.error_message)
-    minimum_size << (0, 28) if app_model.error_message else (0, 0)
-    maximum_size << (16777215, 28) if app_model.error_message else (16777215, 0)
+    align_widths = False
+    padding = 4
+    trailing_spacer = None
+    visible << bool(app_model.banner_level)
+    minimum_size << (0, 32) if app_model.banner_level else (0, 0)
+    maximum_size << (16777215, 32) if app_model.banner_level else (16777215, 0)
     Label:
-        text << app_model.error_message
+        text << app_model.banner_summary
+        style_class << "error-banner" if app_model.banner_level == "error" else "warning-banner"
+        hug_width = 'ignore'
+    PushButton:                      # "Details"
+        visible << app_model.banner_truncated
+        maximum_size = (70, 24)
+    PushButton:                      # dismiss
+        maximum_size = (30, 24)
 ```
 Binding `minimum_size`/`maximum_size` themselves (not just `visible`) to the same
 condition gives the constraint solver a deterministic height in both states, so the
 Splitter reclaims the space cleanly instead of the layout being left to
 implicit hidden-widget sizing.
+
+### Banner levels, elided text, Details, dismiss
+
+The banner shows one message at a time. `AppModel` has two sources, `error_message` (red,
+`error-banner` style) and `warning_message` (amber, `warning-banner`), and derives what the
+view binds to via observers: `banner_level` (`""`/`"error"`/`"warning"`), `banner_text` (full
+text), `banner_summary` (one line) and `banner_truncated`. **An error takes precedence**: while
+`error_message` is set it is shown, and the warning reappears once the error is cleared.
+Views bind only to the `banner_*` members; code sets `error_message` / `warning_message`.
+
+- **Elide**: the label only ever holds a single line (`gui/banner.py::elide_message`, pure and
+  unit-tested): the first non-blank line, cut at a word boundary near 100 characters, with `…`
+  appended whenever text was dropped (long line or further lines). Long text therefore never
+  widens the window or runs off screen.
+- **Details**: the "Details" button is visible only when `banner_truncated`. It opens
+  `BannerDetailsDialog` (`views/dialogs/banner_details_dialog.enaml`) with the full text in a
+  read-only, selectable, scrollable `MultilineField` and a Close button.
+- **Dismiss**: the dismiss button calls `app_model.dismiss_banner()`, which clears the message
+  being shown (`error_message` if set, else `warning_message`). Dismissing the "Could not query
+  podman" error also resets `_load_error_banner`, so `_clear_load_error_banner` never mistakes a
+  later error for it.
+- A new `run_async` action clears both messages when it starts. Controller actions that finish
+  with warnings (overlay `start`/`refresh`) collect them in the worker via `on_warning` and set
+  `app.warning_message` in `on_success` on the GUI thread.
+- The banner sits outside the Splitter, so Details and dismiss stay usable while busy.
 
 ## Disabling UI during async operations — do not re-add per-button guards
 
@@ -136,7 +171,7 @@ is added outside the Splitter (e.g. a ToolBar Action), it needs its own
 ## Controller layout: where actions live
 
 `AppModel` (`gui/models/app.py`) holds the shared GUI state (`instances`, `selected_instance`,
-`status_message`, `error_message`, `busy`, ...) and the async machinery. Actions live on
+`status_message`, `error_message`, `warning_message`, `busy`, ...) and the async machinery. Actions live on
 plain-Python controller objects in `gui/controllers/` that `AppModel` creates and exposes as
 members; views call them as `app_model.<controller>.<action>(...)`:
 

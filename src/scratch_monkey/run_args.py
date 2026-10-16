@@ -6,9 +6,9 @@ import os
 import socket
 from pathlib import Path
 
-from .config import ConfigError, validate_volume_spec
+from .config import ConfigError, split_volume_spec, validate_volume_spec
 from .instance import Instance, is_fedora_based
-from .overlay_mounts import translate_volume
+from .overlay_mounts import OverlayHostFacts, is_overlay_spec, translate_volume
 from .shared import parse_shared_entry
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -77,16 +77,30 @@ def container_home_path(*, root: bool = False) -> str:
     return f"/home/{os.environ.get('USER', 'user')}"
 
 
+def _overlay_skip_message(vol: str, problem: str) -> str:
+    return (
+        f"Skipping overlay volume {vol!r}: {problem}. Overlay specific "
+        "subdirectories instead (e.g. ~/.local/bin or ~/.local/share/<app>), "
+        "or use 'ro' for the whole tree."
+    )
+
+
 def build_run_args(
     instance: Instance,
     *,
     is_fedora: bool | None = None,
     root: bool = False,
+    host_facts: OverlayHostFacts | None = None,
 ) -> tuple[list[str], list[str]]:
     """Build the podman run arguments for a container.
 
     Shared between overlay mode (overlay.py) and direct-run mode (cli/main.py).
     Returns (args, warnings) where warnings is a list of human-readable messages.
+
+    Pure with respect to podman and /proc: ``host_facts`` (from
+    ``overlay_mounts.overlay_host_facts``) carries what is needed to skip
+    overlay-mode volumes the kernel cannot use as a lower layer.  Without it
+    no overlay volume is skipped.
     """
     cfg = instance.config
     user = os.environ.get("USER", "user")
@@ -195,6 +209,11 @@ def build_run_args(
         except ConfigError:
             warnings.append(f"Skipping invalid volume spec {vol!r}: empty host or container path.")
             continue
+        if host_facts is not None and is_overlay_spec(vol):
+            problem = host_facts.conflict(split_volume_spec(vol)[0])
+            if problem:
+                warnings.append(_overlay_skip_message(vol, problem))
+                continue
         try:
             # ``overlay`` mode becomes a podman overlay mount with a per-instance
             # upper/work pair; every other spec passes through unchanged.
